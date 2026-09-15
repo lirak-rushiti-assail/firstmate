@@ -257,6 +257,15 @@ json=$(run_dashboard --json --force-refresh) || fail "failed refresh should stil
 assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "failed refresh marks widget not ok"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "failed refresh keeps last good answer"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector refused" "failed refresh records the error"
+
+# The answer a failed refresh carried forward is itself the last good answer for the
+# next failure, so an outage lasting more than one refresh does not erase the agenda.
+json=$(run_dashboard --json --force-refresh) || fail "second failed refresh should still render"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "a repeated failure keeps the last good calendar answer"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.email.answer')" "Please review" "a repeated failure keeps the last good email answer"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector refused" "a repeated failure still reports the current error"
+json=$(run_dashboard --json --force-refresh) || fail "third failed refresh should still render"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "the last good answer survives a prolonged outage"
 unset FM_DASHBOARD_TEST_FAIL
 rendered=$(run_dashboard) || fail "terminal view should render after a failed refresh"
 assert_contains "$rendered" "Standup" "stale answer still rendered"

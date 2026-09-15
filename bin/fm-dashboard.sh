@@ -154,7 +154,7 @@ cache_is_fresh() { # <path>
 
 cache_last_good_answer() { # <path>
   [ -s "$1" ] || return 0
-  jq -r 'if (.ok == true) and ((.answer // "") != "") then .answer else "" end' "$1" 2>/dev/null
+  jq -r '.answer // "" | if type == "string" then . else "" end' "$1" 2>/dev/null
 }
 
 refresh_m365_cache() { # <kind> <prompt> <dest>
