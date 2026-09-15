@@ -241,10 +241,28 @@ gather_dashboard_json() {
       ($b[0] // {}) as $b0
       | ($f[0] // {}) as $f0
       | (arr($b0.omitted)) as $omitted
-      | def omitted_for($prefix): [ $omitted[] | select((.surface // "") | startswith($prefix)) ];
-      (arr($f0.backlog.records)
+      | def panel_key:
+          if startswith("landed") or startswith("secondmate home Done capped") then "done"
+          elif startswith("in_flight") or startswith("main in-flight")
+            or startswith("secondmates showing") or startswith("registered secondmates omitted")
+            or test("^secondmate .+ active children omitted") then "working"
+          elif startswith("gates") then "next"
+          else null end;
+      def bounds_every_panel:
+          startswith("secondmate registry")
+          or startswith("secondmate home(s) with unreadable structured state")
+          or startswith("secondmate parent activity evidence")
+          or startswith("main unstructured current backlog");
+      def omitted_for($panel):
+          [ $omitted[]
+            | (.surface // "") as $surface
+            | select(($surface | panel_key) == $panel or ($surface | bounds_every_panel)) ];
+      ((arr($f0.backlog.records)
           | map(select(landed_record and .completion.date == $today)
-              | {id,title,repo,kind,completion,artifact:(landed_artifact // "-")})) as $done_today
+              | {id,title,kind,completion,owner:"(main)",artifact:(landed_artifact // "-")}))
+        + (arr($f0.secondmate_landed.records)
+          | map(select(.completion.date == $today)
+              | {id,title,kind,completion,owner:(.home_id // "-"),artifact:(landed_artifact // "-")}))) as $done_today
       | {
           schema:"fm-dashboard.v1",
           generated:$generated,
@@ -258,9 +276,9 @@ gather_dashboard_json() {
             calendar:($calendar[0] // {}),
             email:($email[0] // {}),
             seen:{items:($seen[0] // [])},
-            done:{items:arr($b0.landed),omitted:omitted_for("landed")},
-            working:{items:arr($b0.in_flight),omitted:omitted_for("in_flight")},
-            next:{items:arr($b0.gates),omitted:omitted_for("gates")},
+            done:{items:arr($b0.landed),omitted:omitted_for("done")},
+            working:{items:arr($b0.in_flight),omitted:omitted_for("working")},
+            next:{items:arr($b0.gates),omitted:omitted_for("next")},
             today:{
               items:$done_today,
               count:($done_today | length),
@@ -320,7 +338,7 @@ render_dashboard() {
   panel 'Current working tasks' "$body"
 
   body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.next.items[]? | "- \(.title // .id) [\(.repo // "-")] - \(.reason // .blocked_by // "ready")"),
+    (.widgets.next.items[]? | "- \(.title // .id) [\(.owner // "-")] - \(.reason // "-")"),
     (.widgets.next | bounded_note)')
   panel 'Next tasks' "$body"
 
@@ -332,7 +350,7 @@ render_dashboard() {
   body=$(printf '%s' "$json" | jq -r '.widgets.seen.items[]? | "- \(.at): \(.id)" + (if (.note // "") == "" then "" else " - " + .note end)')
   panel 'Seen actions' "$body"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.today.summary as $s | [$s, (.widgets.today.items[]? | "- \(.title // .id) [\(.repo // "-")] \(.completion.verb // "done") \(.completion.date // "")")] | .[]')
+  body=$(printf '%s' "$json" | jq -r '.widgets.today.summary as $s | [$s, (.widgets.today.items[]? | "- \(.title // .id) [\(.owner // "-")] \(.completion.verb // "done") \(.completion.date // "")")] | .[]')
   panel 'Today summary' "$body"
 }
 

@@ -31,7 +31,7 @@ cat > "$TMP_ROOT/bearings.json" <<JSON
     {"id":"ship-1","kind":"ship","state":"working","repo":"firstmate","name":"Build dashboard","doing":"coding"}
   ],
   "gates": [
-    {"id":"next-1","title":"Next task","repo":"firstmate","reason":"ready"}
+    {"id":"next-1","title":"Next task","blocked_by":"-","reason":"awaiting review","owner":"mate-a","filed":"2026-01-01"}
   ],
   "landed": [
     {"id":"done-1","what":"Merged finished work","owner":"(main)"}
@@ -40,6 +40,8 @@ cat > "$TMP_ROOT/bearings.json" <<JSON
     {"surface":"landed showing 1 of 14","reveal":"--all-landed"},
     {"surface":"in_flight showing 1 of 30","reveal":"--all-in-flight"},
     {"surface":"gates showing 1 of 25","reveal":"--all-queued"},
+    {"surface":"secondmate home Done capped at the snapshot layer for 2 home(s)","reveal":"--all-landed"},
+    {"surface":"secondmate registry unavailable: read failed","reveal":"inspect data/secondmates.md"},
     {"surface":"task paths","reveal":"--fields paths"}
   ]
 }
@@ -53,6 +55,12 @@ cat > "$TMP_ROOT/fleet.json" <<JSON
       {"state":"done","structured":true,"id":"today-1","title":"Finished today","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/1"},
       {"state":"done","structured":true,"id":"old-1","title":"Finished earlier","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$YESTERDAY"},"pr_url":"https://example.invalid/pr/2"},
       {"state":"done","structured":true,"id":"cap-1","title":"Decide the rollout","repo":"firstmate","kind":"captain","completion":{"verb":"done","date":"$TODAY"},"local_note":"decided"}
+    ]
+  },
+  "secondmate_landed": {
+    "records": [
+      {"id":"mate-today-1","title":"Mate landed today","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/9","home":"/homes/mate-a","home_id":"mate-a"},
+      {"id":"mate-old-1","title":"Mate landed earlier","kind":"ship","completion":{"verb":"merged","date":"$YESTERDAY"},"pr_url":"https://example.invalid/pr/8","home":"/homes/mate-a","home_id":"mate-a"}
     ]
   }
 }
@@ -117,7 +125,11 @@ assert_equals "1" "$(fleet_collections)" "one render collects the fleet snapshot
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.working.items | length')" "working widget uses bearings snapshot"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.next.items | length')" "next widget uses bearings gates"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.done.items | length')" "done widget uses landed rows"
-assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.today.count')" "today summary filters completion date"
+assert_equals "2" "$(printf '%s' "$json" | jq -r '.widgets.today.count')" "today summary filters completion date"
+# Today summary answers for the same fleet the Done actions panel describes, so a
+# secondmate home's delivery landed today counts too.
+assert_equals "mate-a" "$(printf '%s' "$json" | jq -r '.widgets.today.items[] | select(.id == "mate-today-1") | .owner')" "secondmate delivery landed today is attributed to its home"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.items[] | select(.id == "mate-old-1")] | length')" "secondmate delivery landed earlier is not counted today"
 # The today summary and the Done actions panel answer the same question, so the
 # today widget uses the shared landed selector: a closed captain call is a
 # decision, not a delivery, and must not be counted as work landed today.
@@ -127,8 +139,16 @@ assert_equals "https://example.invalid/pr/1" "$(printf '%s' "$json" | jq -r '.wi
 
 # Bearings bounds each section and discloses the gap in omitted[]; the panels
 # that render a bounded section must not present it as the complete set.
-assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.done.omitted | length')" "done widget keeps its own truncation disclosure"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("landed showing"))] | length')" "done widget keeps its own truncation disclosure"
 assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface == "task paths")] | length')" "unrelated omitted surfaces stay out of the done widget"
+# A capped secondmate Done set bounds the landed panel even though its surface
+# text does not start with "landed", and an unavailable registry bounds every
+# fleet panel because it explains a short or empty one.
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("secondmate home Done capped"))] | length')" "capped secondmate Done set is disclosed on the done panel"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.working.omitted[] | select(.surface | startswith("secondmate home Done capped"))] | length')" "a landed-only bound stays off the working panel"
+for w in "done" "working" "next"; do
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate registry unavailable"))] | length')" "unavailable registry is disclosed on the $w panel"
+done
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
 
 rendered=$(run_dashboard) || fail "dashboard terminal view should render"
@@ -140,6 +160,9 @@ assert_contains "$rendered" "landed showing 1 of 14" "done panel discloses its t
 assert_contains "$rendered" "--all-landed" "done panel names how to reveal the rest"
 assert_contains "$rendered" "in_flight showing 1 of 30" "working panel discloses its truncation"
 assert_contains "$rendered" "gates showing 1 of 25" "next panel discloses its truncation"
+assert_contains "$rendered" "secondmate registry unavailable: read failed" "partial fleet data is visible in the panels it bounds"
+assert_contains "$rendered" "Next task [mate-a]" "next panel names the home that owns the gate"
+assert_contains "$rendered" "awaiting review" "next panel renders the gate reason"
 assert_not_contains "$rendered" "task paths" "unrelated omitted surfaces are not rendered as panel truncation"
 
 seen_out=$(run_dashboard --mark-seen email-123 --note 'handled locally') || fail "mark seen should succeed"
