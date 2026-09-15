@@ -13,6 +13,7 @@ TMP_ROOT=$(fm_test_tmproot fm-dashboard)
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 
 TODAY=$(date -u +%Y-%m-%d)
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 YESTERDAY=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d 'yesterday' +%Y-%m-%d)
 HOME_DIR="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
@@ -45,6 +46,8 @@ cat > "$TMP_ROOT/bearings.json" <<JSON
     {"surface":"registered secondmates omitted by snapshot bound: 2","reveal":"raise FM_SNAPSHOT_SECONDMATES"},
     {"surface":"secondmate mate-b served from cached home ledger","reveal":"inspect the home ledger publication and remote route"},
     {"surface":"secondmates showing 5 of 20","reveal":"--all-secondmates"},
+    {"surface":"secondmate parent activity evidence unavailable for 2 record(s)","reveal":"inspect the parent status logs"},
+    {"surface":"main unstructured current backlog row(s): 2","reveal":"inspect main data/backlog.md In flight and Queued free-form rows"},
     {"surface":"secondmate mate-c active children omitted by snapshot bound: 3","reveal":"raise FM_SNAPSHOT_SECONDMATE_CHILDREN"},
     {"surface":"task paths","reveal":"--fields paths"}
   ]
@@ -54,6 +57,7 @@ JSON
 cat > "$TMP_ROOT/fleet.json" <<JSON
 {
   "schema": "fm-fleet-snapshot.v1",
+  "generated": "$NOW",
   "backlog": {
     "records": [
       {"state":"done","structured":true,"id":"today-1","title":"Finished today","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/1"},
@@ -166,6 +170,22 @@ done
 # dashboard never renders, so it must not warn that complete panels are short.
 assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets[] | objects | .omitted // [] | .[] | select(.surface | startswith("secondmates showing"))] | length')" "a cap on an unrendered section warns on no panel"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.working.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children bound only the working panel"
+
+# Today is fleet-scoped like Done actions, so a gap that hides landed rows must be
+# disclosed there too rather than letting the count read as the whole day.
+for w in "done" "today"; do
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("landed showing"))] | length')" "landed truncation is disclosed on the $w panel"
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate registry unavailable"))] | length')" "unavailable registry is disclosed on the $w panel"
+done
+
+# Parent activity evidence feeds no rendered panel, and an unstructured main row can
+# never have been dropped from the landed set, so neither may mark a full list short.
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets[] | objects | .omitted // [] | .[] | select(.surface | startswith("secondmate parent activity evidence"))] | length')" "parent activity evidence warns on no panel"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows do not bound the done panel"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows do not bound the today panel"
+for w in "working" "next"; do
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows bound the $w panel"
+done
 assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.next.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children do not bound the next panel"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
 
@@ -220,5 +240,25 @@ unset FM_DASHBOARD_TEST_FAIL
 rendered=$(run_dashboard) || fail "terminal view should render after a failed refresh"
 assert_contains "$rendered" "Standup" "stale answer still rendered"
 assert_contains "$rendered" "stale:" "stale answer is marked stale"
+
+# The fleet collection obeys the same freshness window as the connector, so a
+# --watch tick redraws from the cached snapshot instead of re-reading every
+# registered home once per tick.
+collected=$(fleet_collections)
+json=$(run_dashboard --json) || fail "cached fleet render should succeed"
+assert_equals "$collected" "$(fleet_collections)" "render inside the freshness window reuses the collected snapshot"
+assert_equals "true" "$(printf '%s' "$json" | jq -r '.fleet.cached')" "a reused snapshot is reported as cached"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.working.items | length')" "a cached snapshot still fills the panels"
+rendered=$(run_dashboard) || fail "cached terminal view should render"
+assert_contains "$rendered" "(cached)" "header discloses that the fleet snapshot came from cache"
+
+json=$(run_dashboard --json --force-refresh) || fail "forced fleet refresh should render"
+assert_equals "$((collected + 1))" "$(fleet_collections)" "force refresh re-collects the fleet snapshot"
+assert_equals "false" "$(printf '%s' "$json" | jq -r '.fleet.cached')" "a freshly collected snapshot is not reported as cached"
+
+export FM_DASHBOARD_CACHE_TTL=0
+json=$(run_dashboard --json) || fail "zero-ttl fleet render should succeed"
+assert_equals "$((collected + 2))" "$(fleet_collections)" "zero freshness window always re-collects the fleet snapshot"
+unset FM_DASHBOARD_CACHE_TTL
 
 pass "fm-dashboard"

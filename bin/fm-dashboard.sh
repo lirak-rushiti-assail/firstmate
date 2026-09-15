@@ -14,7 +14,12 @@
 # refresh and projects it twice: directly for the today summary, and through
 # fm-bearings-snapshot.sh (FM_BEARINGS_SNAPSHOT_JSON) for the underway, gate, and
 # landed panels, so every panel describes the same instant and one refresh costs one
-# remote-ledger collection.
+# remote-ledger collection. That collection is itself reused from
+# state/dashboard/cache/fleet.json while it is younger than the freshness window, so
+# a --watch tick redraws from the cached snapshot instead of re-reading every remote
+# home; the header reports the snapshot's age whenever a panel is drawn from cache.
+# Collecting a fresh snapshot lets fm-fleet-snapshot.sh refresh its parent-side
+# remote-ledger cache, which is the only fleet state any dashboard run writes.
 # Microsoft 365 calendar and mail reads are optional and read-only: pass
 # --refresh-external to refresh private cache files under state/dashboard/ through
 # ~/.agents/skills/claude-connectors/query.py, which reuses a cached widget while it
@@ -25,6 +30,8 @@
 # Seen actions are local-only markers under state/dashboard/seen.jsonl.
 # The script never mutates backlog, task state, calendar, mail, GitHub, Linear, or
 # any Herdr session state.
+# Panels disclose what the snapshot could not fully read: a bounded or partial
+# section prints a concise trailing line naming the gap and how to reveal it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -201,7 +208,7 @@ make_seen_json() { # <dest>
 }
 
 gather_dashboard_json() {
-  local tmpdir bearings fleet calendar email seen out now today
+  local tmpdir bearings fleet fleet_cache fleet_cached fleet_generated fleet_age calendar email seen out now today
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard.XXXXXX") || fail "cannot create temp dir"
   bearings="$tmpdir/bearings.json"
   fleet="$tmpdir/fleet.json"
@@ -216,15 +223,34 @@ gather_dashboard_json() {
     refresh_external
   fi
 
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_SNAPSHOT_NOW="$now" \
-    "$FLEET_CMD" --json > "$fleet" \
-    || { rm -rf "$tmpdir"; fail "cannot read fleet snapshot"; }
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_BEARINGS_NOW="$now" \
+  ensure_state
+  fleet_cache="$DASH_STATE/cache/fleet.json"
+  fleet_cached=0
+  if [ "$FORCE_REFRESH" != 1 ] && cache_is_fresh "$fleet_cache"; then
+    fleet_cached=1
+    cat "$fleet_cache" > "$fleet" || { rm -rf "$tmpdir"; fail "cannot read cached fleet snapshot"; }
+  else
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_SNAPSHOT_NOW="$now" \
+      "$FLEET_CMD" --json > "$fleet" \
+      || { rm -rf "$tmpdir"; fail "cannot read fleet snapshot"; }
+    if ! { cp "$fleet" "$fleet_cache.tmp" && mv "$fleet_cache.tmp" "$fleet_cache"; }; then
+      rm -f "$fleet_cache.tmp"
+      rm -rf "$tmpdir"
+      fail "cannot publish fleet cache"
+    fi
+  fi
+  fleet_generated=$(jq -r '.generated // ""' "$fleet") \
+    || { rm -rf "$tmpdir"; fail "cannot read fleet snapshot instant"; }
+  [ -n "$fleet_generated" ] || fleet_generated=$now
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_BEARINGS_NOW="$fleet_generated" \
     FM_BEARINGS_SNAPSHOT_JSON="$fleet" "$BEARINGS_CMD" --json > "$bearings" \
     || { rm -rf "$tmpdir"; fail "cannot read bearings snapshot"; }
   cache_file_or_placeholder "$DASH_STATE/cache/calendar.json" "Run fm-dashboard.sh --refresh-external to populate calendar events." > "$calendar"
   cache_file_or_placeholder "$DASH_STATE/cache/email.json" "Run fm-dashboard.sh --refresh-external to populate important emails." > "$email"
   make_seen_json "$seen"
+
+  fleet_age=$(( $(date -u +%s) - $(utc_to_epoch "$fleet_generated" || date -u +%s) ))
+  [ "$fleet_age" -ge 0 ] || fleet_age=0
 
   jq -n \
     --slurpfile b "$bearings" \
@@ -233,6 +259,9 @@ gather_dashboard_json() {
     --slurpfile email "$email" \
     --slurpfile seen "$seen" \
     --arg generated "$now" \
+    --arg fleet_generated "$fleet_generated" \
+    --argjson fleet_age "$fleet_age" \
+    --argjson fleet_cached "$fleet_cached" \
     --arg today "$today" \
     --arg fm_home "$FM_HOME" \
     --arg herdr_env "${HERDR_ENV:-}" \
@@ -241,23 +270,19 @@ gather_dashboard_json() {
       ($b[0] // {}) as $b0
       | ($f[0] // {}) as $f0
       | (arr($b0.omitted)) as $omitted
-      | def panel_key:
-          if startswith("landed") or startswith("secondmate home Done capped") then "done"
+      | def panels_bounded:
+          if startswith("landed") or startswith("secondmate home Done capped") then ["done","today"]
           elif startswith("in_flight") or startswith("main in-flight")
-            or test("^secondmate .+ active children omitted") then "working"
-          elif startswith("gates") then "next"
-          else null end;
-      def bounds_every_panel:
-          startswith("secondmate registry")
-          or startswith("registered secondmates omitted")
-          or startswith("secondmate home(s) with unreadable structured state")
-          or startswith("secondmate parent activity evidence")
-          or startswith("main unstructured current backlog")
-          or test(" served from cached home ledger$");
+            or test("^secondmate .+ active children omitted") then ["working"]
+          elif startswith("gates") then ["next"]
+          elif startswith("main unstructured current backlog") then ["working","next"]
+          elif startswith("secondmate registry")
+            or startswith("registered secondmates omitted")
+            or startswith("secondmate home(s) with unreadable structured state")
+            or test(" served from cached home ledger$") then ["done","working","next","today"]
+          else [] end;
       def omitted_for($panel):
-          [ $omitted[]
-            | (.surface // "") as $surface
-            | select(($surface | panel_key) == $panel or ($surface | bounds_every_panel)) ];
+          [ $omitted[] | select((((.surface // "") | panels_bounded) | index($panel)) != null) ];
       ((arr($f0.backlog.records)
           | map(select(landed_record and .completion.date == $today)
               | {id,title,kind,completion,owner:"(main)",artifact:(landed_artifact // "-")}))
@@ -269,6 +294,7 @@ gather_dashboard_json() {
           generated:$generated,
           home:$fm_home,
           today:$today,
+          fleet:{generated:$fleet_generated,age_seconds:$fleet_age,cached:($fleet_cached == 1)},
           herdr:{
             detected:($herdr_env != ""),
             session:(if $herdr_session != "" then $herdr_session else null end)
@@ -283,6 +309,7 @@ gather_dashboard_json() {
             today:{
               items:$done_today,
               count:($done_today | length),
+              omitted:omitted_for("today"),
               summary:(if ($done_today | length) == 0 then "Nothing landed today." else "\(($done_today | length)) landed today." end)
             }
           }
@@ -323,6 +350,8 @@ render_dashboard() {
   local json=$1 header body
   header=$(printf '%s' "$json" | jq -r '
     "Firstmate dashboard " + .generated +
+    (.fleet as $f
+     | if ($f.cached // false) then " \u00b7 fleet \((($f.age_seconds // 0) / 60 | floor))m old (cached)" else "" end) +
     (if .herdr.detected then " · Herdr " + (.herdr.session // "session") else " · Herdr not detected" end)
   ')
   printf '%s\n' "$header"
@@ -351,7 +380,10 @@ render_dashboard() {
   body=$(printf '%s' "$json" | jq -r '.widgets.seen.items[]? | "- \(.at): \(.id)" + (if (.note // "") == "" then "" else " - " + .note end)')
   panel 'Seen actions' "$body"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.today.summary as $s | [$s, (.widgets.today.items[]? | "- \(.title // .id) [\(.owner // "-")] \(.completion.verb // "done") \(.completion.date // "")")] | .[]')
+  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    .widgets.today.summary,
+    (.widgets.today.items[]? | "- \(.title // .id) [\(.owner // "-")] \(.completion.verb // "done") \(.completion.date // "")"),
+    (.widgets.today | bounded_note)')
   panel 'Today summary' "$body"
 }
 
