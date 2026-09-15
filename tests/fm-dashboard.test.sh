@@ -215,6 +215,21 @@ assert_contains "$seen_out" "seen: email-123" "mark seen reports id"
 json=$(run_dashboard --json) || fail "dashboard JSON after seen marker should render"
 assert_equals "email-123" "$(printf '%s' "$json" | jq -r '.widgets.seen.items[0].id')" "seen marker appears in dashboard"
 assert_equals "handled locally" "$(printf '%s' "$json" | jq -r '.widgets.seen.items[0].note')" "seen marker note appears in dashboard"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted | length')" "an unbounded seen ledger discloses nothing"
+
+# The Seen panel keeps the most recent 12 markers; past that it must say so rather
+# than read as the complete set of what the operator has marked seen.
+for i in 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+  run_dashboard --mark-seen "email-$i" >/dev/null || fail "mark seen $i should succeed"
+done
+json=$(run_dashboard --json) || fail "dashboard JSON with a bounded seen ledger should render"
+assert_equals "12" "$(printf '%s' "$json" | jq -r '.widgets.seen.items | length')" "seen panel keeps the most recent 12 markers"
+assert_equals "email-14" "$(printf '%s' "$json" | jq -r '.widgets.seen.items[0].id')" "newest seen marker stays at the top"
+assert_equals "seen showing 12 of 14" "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[0].surface')" "seen panel discloses the markers it dropped"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[0].reveal')" "seen.jsonl" "seen disclosure names the local ledger"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.seen.items[] | select(.id == "email-123")] | length')" "the oldest markers are the ones dropped"
+rendered=$(run_dashboard) || fail "terminal view with a bounded seen ledger should render"
+assert_contains "$rendered" "seen showing 12 of 14" "seen panel renders its truncation note"
 
 json=$(run_dashboard --json --refresh-external) || fail "external refresh should render"
 assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "calendar cache refreshed"

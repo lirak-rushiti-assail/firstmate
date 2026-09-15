@@ -48,6 +48,7 @@ FLEET_CMD="${FM_DASHBOARD_FLEET_CMD:-$SCRIPT_DIR/fm-fleet-snapshot.sh}"
 M365_HELPER="${FM_DASHBOARD_M365_HELPER:-$HOME/.agents/skills/claude-connectors/query.py}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CACHE_TTL_SECONDS="${FM_DASHBOARD_CACHE_TTL:-300}"
+SEEN_LIMIT=12
 
 FORMAT=terminal
 WATCH_SECONDS=
@@ -200,7 +201,7 @@ refresh_external() {
 make_seen_json() { # <dest>
   local dest=$1
   if [ -s "$DASH_STATE/seen.jsonl" ]; then
-    jq -s 'map(select(type == "object")) | reverse | .[:12]' "$DASH_STATE/seen.jsonl" > "$dest" \
+    jq -s 'map(select(type == "object")) | reverse' "$DASH_STATE/seen.jsonl" > "$dest" \
       || printf '[]\n' > "$dest"
   else
     printf '[]\n' > "$dest"
@@ -260,6 +261,8 @@ gather_dashboard_json() {
     --slurpfile seen "$seen" \
     --arg generated "$now" \
     --arg fleet_generated "$fleet_generated" \
+    --arg seen_path "$DASH_STATE/seen.jsonl" \
+    --argjson seen_limit "$SEEN_LIMIT" \
     --argjson fleet_age "$fleet_age" \
     --argjson fleet_cached "$fleet_cached" \
     --arg today "$today" \
@@ -303,7 +306,13 @@ gather_dashboard_json() {
           widgets:{
             calendar:($calendar[0] // {}),
             email:($email[0] // {}),
-            seen:{items:($seen[0] // [])},
+            seen:{
+              items:(($seen[0] // [])[:$seen_limit]),
+              omitted:(($seen[0] // []) | length as $n
+                | if $n > $seen_limit
+                  then [{surface:"seen showing \($seen_limit) of \($n)",reveal:("inspect " + $seen_path)}]
+                  else [] end)
+            },
             done:{items:arr($b0.landed),omitted:omitted_for("done")},
             working:{items:arr($b0.in_flight),omitted:omitted_for("working")},
             next:{items:arr($b0.gates),omitted:omitted_for("next")},
@@ -378,7 +387,9 @@ render_dashboard() {
     (.widgets.done | bounded_note)')
   panel 'Done actions' "$body"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.seen.items[]? | "- \(.at): \(.id)" + (if (.note // "") == "" then "" else " - " + .note end)')
+  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.seen.items[]? | "- \(.at): \(.id)" + (if (.note // "") == "" then "" else " - " + .note end)),
+    (.widgets.seen | bounded_note)')
   panel 'Seen actions' "$body"
 
   body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
