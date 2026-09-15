@@ -342,6 +342,7 @@ gather_dashboard_json() {
             email:(($email[0] // {}) | with_answer_age),
             seen:{
               items:(($seen[0] // [])[:$seen_limit]),
+              count:(($seen[0] // []) | length),
               omitted:(($seen[0] // []) | length as $n
                 | (if $n > $seen_limit
                    then [{surface:"seen showing \($seen_limit) of \($n)",reveal:("inspect " + $seen_path)}]
@@ -366,7 +367,8 @@ gather_dashboard_json() {
 }
 
 terminal_columns() {
-  local cols=${COLUMNS:-100}
+  local cols=${COLUMNS:-}
+  [ -n "$cols" ] || cols=$(tput cols 2>/dev/null) || cols=
   case "$cols" in
     ''|*[!0-9]*) cols=100 ;;
   esac
@@ -375,39 +377,94 @@ terminal_columns() {
   printf '%s\n' "$cols"
 }
 
+display_width() { # <text>; sets DW to the text's width in terminal cells
+  local stripped=${1//[$'\x80'-$'\xbf']/}
+  DW=${#stripped}
+}
+
+repeat_char() { # <char> <count>
+  local out='' n=$2
+  while [ "$n" -gt 0 ]; do
+    out="$out$1"
+    n=$((n - 1))
+  done
+  printf '%s' "$out"
+}
+
+cut_cells() { # <text> <cells>; sets CUT to the longest prefix fitting in <cells>
+  local text=$1 cells=$2 chunk=${1:0:$2}
+  display_width "$chunk"
+  while [ -n "$chunk" ] && [ "$DW" -gt "$cells" ]; do
+    chunk=${chunk%?}
+    display_width "$chunk"
+  done
+  while [ -n "$chunk" ]; do
+    case ${text:${#chunk}:1} in
+      [$'\x80'-$'\xbf']) chunk=${chunk%?} ;;
+      *) break ;;
+    esac
+  done
+  CUT=$chunk
+}
+
+wrap_line() { # <text> <cells>; prints the text wrapped to <cells> per line
+  local text=$1 cells=$2 head
+  display_width "$text"
+  while [ "$DW" -gt "$cells" ]; do
+    cut_cells "$text" "$cells"
+    [ -n "$CUT" ] || break
+    head=${CUT% *}
+    if [ "$head" = "$CUT" ] || [ -z "$head" ]; then
+      head=$CUT
+      text=${text:${#head}}
+    else
+      text=${text:$(( ${#head} + 1 ))}
+    fi
+    printf '%s\n' "$head"
+    display_width "$text"
+  done
+  printf '%s\n' "$text"
+}
+
 panel_box_file() { # <title> <body> <file> <width>
-  local title=$1 body=${2:-} file=$3 width=$4
-  printf '%s\n' "$body" | awk -v title="$title" -v width="$width" '
-    function rep(s, n, out) { out=""; while (n-- > 0) out=out s; return out }
-    function clip(s, n) { return length(s) > n ? substr(s, 1, n - 1) "…" : s }
-    function pad(s, n, l) { s=clip(s, n); l=length(s); return s rep(" ", n - l) }
-    BEGIN {
-      if (width < 24) width=24
-      inner=width - 2
-      label=" " title " "
-      label=clip(label, inner)
-      print "╭" label rep("─", inner - length(label)) "╮"
-    }
-    {
-      sub(/\r$/, "")
-      if ($0 == "") next
-      count++
-      print "│ " pad($0, inner - 2) " │"
-    }
-    END {
-      if (count == 0) print "│ " pad("(none)", inner - 2) " │"
-      print "╰" rep("─", inner) "╯"
-    }
-  ' > "$file"
+  local title=$1 body=${2:-} file=$3 width=$4 inner content label line wrapped count=0
+  [ "$width" -lt 24 ] && width=24
+  inner=$((width - 2))
+  content=$((width - 4))
+  cut_cells " $title " "$inner"
+  label=$CUT
+  display_width "$label"
+  {
+    printf '╭%s%s╮\n' "$label" "$(repeat_char '─' $((inner - DW)))"
+    while IFS= read -r line; do
+      line=${line%$'\r'}
+      [ -n "$line" ] || continue
+      while IFS= read -r wrapped; do
+        display_width "$wrapped"
+        printf '│ %s%*s │\n' "$wrapped" "$((content - DW))" ''
+        count=$((count + 1))
+      done < <(wrap_line "$line" "$content")
+    done <<<"$body"
+    if [ "$count" -eq 0 ]; then
+      printf '│ %s%*s │\n' '(none)' "$((content - 6))" ''
+    fi
+    printf '╰%s╯\n' "$(repeat_char '─' "$inner")"
+  } > "$file"
 }
 
 render_panel_pair() { # <tmpdir> <column-width-or-0> <left-title> <left-body> <right-title> <right-body>
-  local tmpdir=$1 width=$2 left_title=$3 left_body=$4 right_title=$5 right_body=$6 left right
+  local tmpdir=$1 width=$2 left_title=$3 left_body=$4 right_title=$5 right_body=$6 left right left_lines right_lines
   left="$tmpdir/left.$$.panel"
   right="$tmpdir/right.$$.panel"
   if [ "$width" -gt 0 ]; then
     panel_box_file "$left_title" "$left_body" "$left" "$width"
     panel_box_file "$right_title" "$right_body" "$right" "$width"
+    left_lines=$(( $(wc -l < "$left") ))
+    right_lines=$(( $(wc -l < "$right") ))
+    while [ "$left_lines" -lt "$right_lines" ]; do
+      printf '%*s\n' "$width" '' >> "$left"
+      left_lines=$((left_lines + 1))
+    done
     paste -d ' ' "$left" "$right"
   else
     panel_box_file "$left_title" "$left_body" "$left" "$(terminal_columns)"
@@ -424,11 +481,15 @@ compact_body() { # <body> [limit]
     {
       line=trim($0)
       if (line == "") next
+      if (line ~ /^…/ || line ~ /^\(/) { notes[++note_count]=line; next }
       if (++seen > limit) { hidden++; next }
-      if (line ~ /^…/ || line ~ /^\(/) print line
-      else { sub(/^[-*•][ \t]*/, "", line); print "• " line }
+      sub(/^[-*•][ \t]*/, "", line)
+      print "• " line
     }
-    END { if (hidden > 0) print "… " hidden " more" }
+    END {
+      if (hidden > 0) print "… " hidden " more"
+      for (i = 1; i <= note_count; i++) print notes[i]
+    }
   '
 }
 
@@ -471,7 +532,7 @@ render_dashboard() {
     "Work \((.widgets.working.items // []) | length)" +
     "  ·  Next \((.widgets.next.items // []) | length)" +
     "  ·  Done today \(.widgets.today.count // 0)" +
-    "  ·  Seen \((.widgets.seen.items // []) | length)"
+    "  ·  Seen \(.widgets.seen.count // ((.widgets.seen.items // []) | length))"
   ')
   printf '%s\n%s\n' "$header" "$stats"
 
