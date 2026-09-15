@@ -344,6 +344,7 @@ gather_dashboard_json() {
             seen:{
               items:(($seen[0] // [])[:$seen_limit]),
               count:(($seen[0] // []) | length),
+              readable:($seen_readable == 1),
               omitted:(($seen[0] // []) | length as $n
                 | (if $n > $seen_limit
                    then [{surface:"seen showing \($seen_limit) of \($n)",reveal:("inspect " + $seen_path)}]
@@ -541,7 +542,8 @@ render_dashboard() {
     "Work \((.widgets.working.items // []) | length)" +
     "  ·  Next \((.widgets.next.items // []) | length)" +
     "  ·  Done today \(.widgets.today.count // 0)" +
-    "  ·  Seen \(.widgets.seen.count // ((.widgets.seen.items // []) | length))"
+    "  ·  Seen " + (if .widgets.seen.readable == false then "?"
+                    else "\(.widgets.seen.count // ((.widgets.seen.items // []) | length))" end)
   ')
   printf '%s\n%s\n' "$header" "$stats"
 
@@ -603,7 +605,7 @@ fi
 if [ -n "$WATCH_SECONDS" ]; then
   while :; do
     printf '\033[H\033[2J'
-    run_once || exit 1
+    run_once || printf 'fm-dashboard: refresh failed; retrying in %ss\n' "$WATCH_SECONDS" >&2
     sleep "$WATCH_SECONDS"
   done
 else

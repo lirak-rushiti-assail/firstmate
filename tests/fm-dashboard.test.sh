@@ -348,6 +348,8 @@ assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.seen.omitted[] | sel
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable") | .reveal')" "seen.jsonl" "the seen disclosure names the local ledger"
 rendered=$(run_dashboard) || fail "terminal view with an unreadable seen ledger should render"
 assert_contains "$rendered" "seen ledger unreadable" "the seen panel discloses that it could not be read"
+assert_contains "$rendered" "Seen ?" "the stats row does not assert a seen count it could not read"
+assert_not_contains "$rendered" "Seen 0" "an unreadable ledger is not summarised as nothing seen"
 
 # A connector that dies without writing anything must not read as an empty agenda.
 export FM_DASHBOARD_TEST_SILENT_FAIL=1
@@ -368,5 +370,20 @@ if FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --json --force-refresh >"$TMP_RO
   fail "a failed fleet collection should not exit 0 in JSON mode"
 fi
 assert_equals "" "$(cat "$TMP_ROOT/failed.json")" "a failed fleet collection emits no JSON document"
+
+# A watch loop must survive a transient collection failure and keep refreshing.
+FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --watch 1 --force-refresh \
+  >"$TMP_ROOT/watch.out" 2>"$TMP_ROOT/watch.err" &
+watch_pid=$!
+sleep 3
+if ! kill -0 "$watch_pid" 2>/dev/null; then
+  wait "$watch_pid" 2>/dev/null || true
+  fail "a transient collection failure should not kill the watch loop"
+fi
+kill "$watch_pid" 2>/dev/null || true
+wait "$watch_pid" 2>/dev/null || true
+assert_equals "true" \
+  "$([ "$(grep -c 'retrying' "$TMP_ROOT/watch.err")" -ge 2 ] && printf 'true' || printf 'false')" \
+  "each failed watch tick reports the failure and retries"
 
 pass "fm-dashboard"
