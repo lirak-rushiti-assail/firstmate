@@ -18,6 +18,9 @@
 # state/dashboard/cache/fleet.json while it is younger than the freshness window, so
 # a --watch tick redraws from the cached snapshot instead of re-reading every remote
 # home; the header reports the snapshot's age whenever a panel is drawn from cache.
+# That reuse is keyed on the FM_SNAPSHOT_* collection settings as well as age, so
+# raising a bound a panel's disclosure names re-collects instead of replaying a
+# snapshot collected under the old bound.
 # Collecting a fresh snapshot lets fm-fleet-snapshot.sh refresh its parent-side
 # remote-ledger cache, which is the only fleet state any dashboard run writes.
 # Microsoft 365 calendar and mail reads are optional and read-only: pass
@@ -155,6 +158,12 @@ cache_is_fresh() { # <path>
   [ "$((now - epoch))" -lt "$CACHE_TTL_SECONDS" ]
 }
 
+fleet_collection_settings() {
+  env | sed -n 's/^\(FM_SNAPSHOT_[A-Z0-9_]*=.*\)$/\1/p' \
+    | grep -v '^FM_SNAPSHOT_NOW' \
+    | LC_ALL=C sort
+}
+
 cache_last_good_answer() { # <path>
   [ -s "$1" ] || return 0
   jq -r '.answer // "" | if type == "string" then . else "" end' "$1" 2>/dev/null
@@ -216,7 +225,7 @@ make_seen_json() { # <dest>
 }
 
 gather_dashboard_json() {
-  local tmpdir bearings fleet fleet_cache fleet_cached fleet_generated fleet_age calendar email seen out now today
+  local tmpdir bearings fleet fleet_cache fleet_settings fleet_cached fleet_generated fleet_age calendar email seen out now today
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard.XXXXXX") || fail "cannot create temp dir"
   bearings="$tmpdir/bearings.json"
   fleet="$tmpdir/fleet.json"
@@ -233,8 +242,10 @@ gather_dashboard_json() {
 
   ensure_state
   fleet_cache="$DASH_STATE/cache/fleet.json"
+  fleet_settings=$(fleet_collection_settings)
   fleet_cached=0
-  if [ "$FORCE_REFRESH" != 1 ] && cache_is_fresh "$fleet_cache"; then
+  if [ "$FORCE_REFRESH" != 1 ] && cache_is_fresh "$fleet_cache" \
+    && [ "$fleet_settings" = "$(cat "$fleet_cache.settings" 2>/dev/null)" ]; then
     fleet_cached=1
     cat "$fleet_cache" > "$fleet" || { rm -rf "$tmpdir"; fail "cannot read cached fleet snapshot"; }
   else
@@ -245,6 +256,12 @@ gather_dashboard_json() {
       rm -f "$fleet_cache.tmp"
       rm -rf "$tmpdir"
       fail "cannot publish fleet cache"
+    fi
+    if ! { printf '%s\n' "$fleet_settings" > "$fleet_cache.settings.tmp" \
+      && mv "$fleet_cache.settings.tmp" "$fleet_cache.settings"; }; then
+      rm -f "$fleet_cache.settings.tmp"
+      rm -rf "$tmpdir"
+      fail "cannot publish fleet cache settings"
     fi
   fi
   fleet_generated=$(jq -r '.generated // ""' "$fleet") \

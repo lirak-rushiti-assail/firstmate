@@ -293,9 +293,22 @@ json=$(run_dashboard --json --force-refresh) || fail "forced fleet refresh shoul
 assert_equals "$((collected + 1))" "$(fleet_collections)" "force refresh re-collects the fleet snapshot"
 assert_equals "false" "$(printf '%s' "$json" | jq -r '.fleet.cached')" "a freshly collected snapshot is not reported as cached"
 
+# A panel disclosure tells the operator to raise an FM_SNAPSHOT_* bound, so a run
+# that raises one must re-collect rather than replay a snapshot collected under
+# the old bound.
+collected=$(fleet_collections)
+FM_SNAPSHOT_SECONDMATES=50 run_dashboard --json > /dev/null || fail "raised-bound render should succeed"
+assert_equals "$((collected + 1))" "$(fleet_collections)" "a changed snapshot bound re-collects the fleet snapshot"
+json=$(FM_SNAPSHOT_SECONDMATES=50 run_dashboard --json) || fail "repeated raised-bound render should succeed"
+assert_equals "$((collected + 1))" "$(fleet_collections)" "an unchanged snapshot bound still reuses the cached snapshot"
+assert_equals "true" "$(printf '%s' "$json" | jq -r '.fleet.cached')" "the reused snapshot is reported as cached"
+json=$(run_dashboard --json) || fail "restored-bound render should succeed"
+assert_equals "$((collected + 2))" "$(fleet_collections)" "restoring the default bound re-collects the fleet snapshot"
+
+collected=$(fleet_collections)
 export FM_DASHBOARD_CACHE_TTL=0
 json=$(run_dashboard --json) || fail "zero-ttl fleet render should succeed"
-assert_equals "$((collected + 2))" "$(fleet_collections)" "zero freshness window always re-collects the fleet snapshot"
+assert_equals "$((collected + 1))" "$(fleet_collections)" "zero freshness window always re-collects the fleet snapshot"
 unset FM_DASHBOARD_CACHE_TTL
 
 # A plain run serves the cached answer without re-querying, so a successful answer
