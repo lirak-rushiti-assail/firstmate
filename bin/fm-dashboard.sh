@@ -365,15 +365,71 @@ gather_dashboard_json() {
   rm -rf "$tmpdir"
 }
 
-panel() { # <title> <body>
-  local title=$1 body=${2:-}
-  printf '\n┌─ %s\n' "$title"
-  if [ -n "$body" ]; then
-    printf '%s\n' "$body" | sed 's/^/│ /'
+terminal_columns() {
+  local cols=${COLUMNS:-100}
+  case "$cols" in
+    ''|*[!0-9]*) cols=100 ;;
+  esac
+  [ "$cols" -gt 120 ] && cols=120
+  [ "$cols" -lt 60 ] && cols=60
+  printf '%s\n' "$cols"
+}
+
+panel_box_file() { # <title> <body> <file> <width>
+  local title=$1 body=${2:-} file=$3 width=$4
+  printf '%s\n' "$body" | awk -v title="$title" -v width="$width" '
+    function rep(s, n, out) { out=""; while (n-- > 0) out=out s; return out }
+    function clip(s, n) { return length(s) > n ? substr(s, 1, n - 1) "…" : s }
+    function pad(s, n, l) { s=clip(s, n); l=length(s); return s rep(" ", n - l) }
+    BEGIN {
+      if (width < 24) width=24
+      inner=width - 2
+      label=" " title " "
+      label=clip(label, inner)
+      print "╭" label rep("─", inner - length(label)) "╮"
+    }
+    {
+      sub(/\r$/, "")
+      if ($0 == "") next
+      count++
+      print "│ " pad($0, inner - 2) " │"
+    }
+    END {
+      if (count == 0) print "│ " pad("(none)", inner - 2) " │"
+      print "╰" rep("─", inner) "╯"
+    }
+  ' > "$file"
+}
+
+render_panel_pair() { # <tmpdir> <column-width-or-0> <left-title> <left-body> <right-title> <right-body>
+  local tmpdir=$1 width=$2 left_title=$3 left_body=$4 right_title=$5 right_body=$6 left right
+  left="$tmpdir/left.$$.panel"
+  right="$tmpdir/right.$$.panel"
+  if [ "$width" -gt 0 ]; then
+    panel_box_file "$left_title" "$left_body" "$left" "$width"
+    panel_box_file "$right_title" "$right_body" "$right" "$width"
+    paste -d ' ' "$left" "$right"
   else
-    printf '│ (none)\n'
+    panel_box_file "$left_title" "$left_body" "$left" "$(terminal_columns)"
+    panel_box_file "$right_title" "$right_body" "$right" "$(terminal_columns)"
+    cat "$left"
+    cat "$right"
   fi
-  printf '└\n'
+}
+
+compact_body() { # <body> [limit]
+  local body=${1:-} limit=${2:-5}
+  printf '%s\n' "$body" | awk -v limit="$limit" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    {
+      line=trim($0)
+      if (line == "") next
+      if (++seen > limit) { hidden++; next }
+      if (line ~ /^…/ || line ~ /^\(/) print line
+      else { sub(/^[-*•][ \t]*/, "", line); print "• " line }
+    }
+    END { if (hidden > 0) print "… " hidden " more" }
+  '
 }
 
 external_body() { # <json> <widget> <fallback>
@@ -403,46 +459,60 @@ BOUNDED_NOTE_JQ='
 '
 
 render_dashboard() {
-  local json=$1 header body
+  local json=$1 header stats calendar_body email_body working_body next_body done_body seen_body today_body
+  local tmpdir cols col_width
   header=$(printf '%s' "$json" | jq -r '
     "Firstmate dashboard " + .generated +
     (.fleet as $f
      | if ($f.cached // false) then " \u00b7 fleet \((($f.age_seconds // 0) / 60 | floor))m old (cached)" else "" end) +
     (if .herdr.detected then " · Herdr " + (.herdr.session // "session") else " · Herdr not detected" end)
   ')
-  printf '%s\n' "$header"
+  stats=$(printf '%s' "$json" | jq -r '
+    "Work \((.widgets.working.items // []) | length)" +
+    "  ·  Next \((.widgets.next.items // []) | length)" +
+    "  ·  Done today \(.widgets.today.count // 0)" +
+    "  ·  Seen \((.widgets.seen.items // []) | length)"
+  ')
+  printf '%s\n%s\n' "$header" "$stats"
 
-  body=$(external_body "$json" calendar 'calendar unavailable')
-  panel 'Next calendar events' "$body"
+  calendar_body=$(compact_body "$(external_body "$json" calendar 'calendar unavailable')")
+  email_body=$(compact_body "$(external_body "$json" email 'email unavailable')")
 
-  body=$(external_body "$json" email 'email unavailable')
-  panel 'Important emails' "$body"
-
-  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.working.items[]? | "- \(.name // .id) [\(.repo // "-")] - \(.state // "unknown"): \(.doing // "")"),
+  working_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.working.items[]? | "● \(.name // .id) [\(.repo // "-")] \(.doing // .state // "unknown")"),
     (.widgets.working | bounded_note)')
-  panel 'Current working tasks' "$body"
 
-  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.next.items[]? | "- \(.title // .id) [\(.owner // "-")] - \(.reason // "-")"),
+  next_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.next.items[]? | "◇ \(.title // .id) [\(.owner // "-")] \(.reason // "-")"),
     (.widgets.next | bounded_note)')
-  panel 'Next tasks' "$body"
 
-  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.done.items[]? | "- \(.what // .id) (\(.owner // "-"))"),
+  done_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.done.items[]? | "✓ \(.what // .id) (\(.owner // "-"))"),
     (.widgets.done | bounded_note)')
-  panel 'Done actions' "$body"
 
-  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.seen.items[]? | "- \(.at): \(.id)"),
+  seen_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.seen.items[]? | "◉ \(.at): \(.id)"),
     (.widgets.seen | bounded_note)')
-  panel 'Seen actions' "$body"
 
-  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    .widgets.today.summary,
-    (.widgets.today.items[]? | "- \(.title // .id) [\(.owner // "-")] \(.completion.verb // "done") \(.completion.date // "")"),
+  today_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    "◷ " + .widgets.today.summary,
+    (.widgets.today.items[]? | "✓ \(.title // .id) [\(.owner // "-")] \(.completion.verb // "done") \(.artifact // "-")"),
     (.widgets.today | bounded_note)')
-  panel 'Today summary' "$body"
+
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-render.XXXXXX") || fail "cannot create render temp dir"
+  cols=$(terminal_columns)
+  if [ "$cols" -ge 118 ]; then
+    col_width=$(( (cols - 1) / 2 ))
+  else
+    col_width=0
+  fi
+
+  render_panel_pair "$tmpdir" "$col_width" 'Next calendar events' "$calendar_body" 'Important emails' "$email_body"
+  render_panel_pair "$tmpdir" "$col_width" 'Current working tasks' "$working_body" 'Next tasks' "$next_body"
+  render_panel_pair "$tmpdir" "$col_width" 'Done actions' "$done_body" 'Seen actions' "$seen_body"
+  panel_box_file 'Today summary' "$today_body" "$tmpdir/today.panel" "$cols"
+  cat "$tmpdir/today.panel"
+  rm -rf "$tmpdir"
 }
 
 run_once() {

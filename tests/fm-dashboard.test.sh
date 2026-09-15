@@ -197,9 +197,11 @@ assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.next.omitted[] | sel
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
 
 rendered=$(run_dashboard) || fail "dashboard terminal view should render"
+assert_contains "$rendered" "Work 1  ·  Next 1  ·  Done today 2  ·  Seen 0" "terminal view starts with compact dashboard counts"
+assert_contains "$rendered" "╭ Next calendar events" "calendar panel uses a dashboard box"
 assert_contains "$rendered" "Next calendar events" "calendar panel rendered"
 assert_contains "$rendered" "Important emails" "email panel rendered"
-assert_contains "$rendered" "Build dashboard" "working task rendered"
+assert_contains "$rendered" "● Build dashboard" "working task rendered as a compact status row"
 assert_contains "$rendered" "Finished today" "today summary rendered"
 assert_contains "$rendered" "landed showing 1 of 14" "done panel discloses its truncation"
 assert_contains "$rendered" "--all-landed" "done panel names how to reveal the rest"
