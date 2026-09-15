@@ -82,14 +82,16 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --json) FORMAT=json ;;
     --watch)
+      [ $# -ge 2 ] || fail "--watch requires a positive integer"
       shift
-      WATCH_SECONDS=${1:-}
+      WATCH_SECONDS=$1
       ;;
     --refresh-external) REFRESH_EXTERNAL=1 ;;
     --force-refresh) REFRESH_EXTERNAL=1; FORCE_REFRESH=1 ;;
     --mark-seen)
+      [ $# -ge 2 ] || fail "--mark-seen requires an id"
       shift
-      MARK_SEEN_ID=${1:-}
+      MARK_SEEN_ID=$1
       ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
@@ -502,17 +504,19 @@ external_body() { # <json> <widget> <fallback>; prints the age/staleness note, t
       elif $seconds < 86400 then "\($seconds / 3600 | floor)h"
       else "\($seconds / 86400 | floor)d"
       end;
+    def one_line: gsub("[\\n\\r\\t]+"; " ") | gsub("  +"; " ");
     (.widgets[$widget] // {}) as $w
     | ($w.answer // "") as $answer
     | ($w.answer_age_seconds // null) as $age
+    | (($w.message // $fallback) | one_line) as $message
     | (if $answer == "" then ""
        elif ($w.ok // false) then
          (if $age != null and $age > $ttl then "(collected " + age_label($age) + " ago)" else "" end)
        else "(stale"
             + (if $age == null then "" else " for " + age_label($age) end)
-            + ": " + ($w.message // $fallback) + ")"
+            + ": " + $message + ")"
        end) as $note
-    | $note + "\n" + (if $answer == "" then ($w.message // $fallback) else $answer end)'
+    | $note + "\n" + (if $answer == "" then $message else $answer end)'
 }
 
 external_panel_body() { # <json> <widget> <fallback>

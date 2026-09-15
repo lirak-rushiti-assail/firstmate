@@ -99,6 +99,10 @@ printf 'call\n' >> "$FM_DASHBOARD_TEST_CALLS"
 if [ -n "${FM_DASHBOARD_TEST_SILENT_FAIL:-}" ]; then
   exit 137
 fi
+if [ -n "${FM_DASHBOARD_TEST_TRACEBACK_FAIL:-}" ]; then
+  printf 'Traceback (most recent call last):\n  File "query.py", line 3\n  connect()\nRuntimeError: boom\n'
+  exit 1
+fi
 if [ -n "${FM_DASHBOARD_TEST_FAIL:-}" ]; then
   printf 'connector refused\n'
   exit 1
@@ -394,5 +398,29 @@ assert_equals "" "${watch_survivors# }" "the watch loop leaves no orphaned dashb
 assert_equals "true" \
   "$([ "$(grep -c 'retrying' "$TMP_ROOT/watch.err")" -ge 2 ] && printf 'true' || printf 'false')" \
   "each failed watch tick reports the failure and retries"
+
+# A multi-line connector error must not crowd out the last good answer.
+NOW_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -nc --arg at "$NOW_AT" \
+  '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup\n- 13:00 Review",message:null}' \
+  > "$HOME_DIR/state/dashboard/cache/calendar.json"
+export FM_DASHBOARD_TEST_TRACEBACK_FAIL=1
+rendered=$(run_dashboard --force-refresh --refresh-external) \
+  || fail "dashboard with a multi-line connector error should render"
+unset FM_DASHBOARD_TEST_TRACEBACK_FAIL
+assert_contains "$rendered" "09:00 Standup" "a multi-line connector error keeps the last good answer"
+assert_contains "$rendered" "RuntimeError: boom)" "a multi-line connector error is reported whole"
+assert_not_contains "$rendered" "• Traceback" "connector error lines are not rendered as answer bullets"
+assert_not_contains "$rendered" "• RuntimeError" "connector error lines are not rendered as answer bullets"
+
+# A flag that needs a value must fail rather than silently rendering.
+if run_dashboard --mark-seen >/dev/null 2>"$TMP_ROOT/noid.err"; then
+  fail "--mark-seen without an id should not exit 0"
+fi
+assert_contains "$(cat "$TMP_ROOT/noid.err")" "--mark-seen requires an id" "--mark-seen without an id says so"
+if run_dashboard --watch >/dev/null 2>"$TMP_ROOT/nowatch.err"; then
+  fail "--watch without a value should not exit 0"
+fi
+assert_contains "$(cat "$TMP_ROOT/nowatch.err")" "--watch requires a positive integer" "--watch without a value says so"
 
 pass "fm-dashboard"
