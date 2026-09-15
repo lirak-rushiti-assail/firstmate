@@ -35,6 +35,12 @@ cat > "$TMP_ROOT/bearings.json" <<JSON
   ],
   "landed": [
     {"id":"done-1","what":"Merged finished work","owner":"(main)"}
+  ],
+  "omitted": [
+    {"surface":"landed showing 1 of 14","reveal":"--all-landed"},
+    {"surface":"in_flight showing 1 of 30","reveal":"--all-in-flight"},
+    {"surface":"gates showing 1 of 25","reveal":"--all-queued"},
+    {"surface":"task paths","reveal":"--fields paths"}
   ]
 }
 JSON
@@ -44,8 +50,9 @@ cat > "$TMP_ROOT/fleet.json" <<JSON
   "schema": "fm-fleet-snapshot.v1",
   "backlog": {
     "records": [
-      {"state":"done","id":"today-1","title":"Finished today","repo":"firstmate","kind":"ship","completion":{"verb":"done","date":"$TODAY"},"report_path":"data/today.md"},
-      {"state":"done","id":"old-1","title":"Finished earlier","repo":"firstmate","kind":"ship","completion":{"verb":"done","date":"$YESTERDAY"},"report_path":"data/old.md"}
+      {"state":"done","structured":true,"id":"today-1","title":"Finished today","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/1"},
+      {"state":"done","structured":true,"id":"old-1","title":"Finished earlier","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$YESTERDAY"},"pr_url":"https://example.invalid/pr/2"},
+      {"state":"done","structured":true,"id":"cap-1","title":"Decide the rollout","repo":"firstmate","kind":"captain","completion":{"verb":"done","date":"$TODAY"},"local_note":"decided"}
     ]
   }
 }
@@ -111,6 +118,17 @@ assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.working.items | lengt
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.next.items | length')" "next widget uses bearings gates"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.done.items | length')" "done widget uses landed rows"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.today.count')" "today summary filters completion date"
+# The today summary and the Done actions panel answer the same question, so the
+# today widget uses the shared landed selector: a closed captain call is a
+# decision, not a delivery, and must not be counted as work landed today.
+assert_equals "today-1" "$(printf '%s' "$json" | jq -r '.widgets.today.items[0].id')" "today summary lists the landed delivery"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.items[] | select(.id == "cap-1")] | length')" "closed captain call is not counted as landed today"
+assert_equals "https://example.invalid/pr/1" "$(printf '%s' "$json" | jq -r '.widgets.today.items[0].artifact')" "today item carries the shared landed artifact"
+
+# Bearings bounds each section and discloses the gap in omitted[]; the panels
+# that render a bounded section must not present it as the complete set.
+assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.done.omitted | length')" "done widget keeps its own truncation disclosure"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface == "task paths")] | length')" "unrelated omitted surfaces stay out of the done widget"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
 
 rendered=$(run_dashboard) || fail "dashboard terminal view should render"
@@ -118,6 +136,11 @@ assert_contains "$rendered" "Next calendar events" "calendar panel rendered"
 assert_contains "$rendered" "Important emails" "email panel rendered"
 assert_contains "$rendered" "Build dashboard" "working task rendered"
 assert_contains "$rendered" "Finished today" "today summary rendered"
+assert_contains "$rendered" "landed showing 1 of 14" "done panel discloses its truncation"
+assert_contains "$rendered" "--all-landed" "done panel names how to reveal the rest"
+assert_contains "$rendered" "in_flight showing 1 of 30" "working panel discloses its truncation"
+assert_contains "$rendered" "gates showing 1 of 25" "next panel discloses its truncation"
+assert_not_contains "$rendered" "task paths" "unrelated omitted surfaces are not rendered as panel truncation"
 
 seen_out=$(run_dashboard --mark-seen email-123 --note 'handled locally') || fail "mark seen should succeed"
 assert_contains "$seen_out" "seen: email-123" "mark seen reports id"

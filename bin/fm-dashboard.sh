@@ -28,6 +28,9 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-landed-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-landed-lib.sh"  # FM_LANDED_JQ_DEFS: the shared landed selector
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -233,15 +236,15 @@ gather_dashboard_json() {
     --arg today "$today" \
     --arg fm_home "$FM_HOME" \
     --arg herdr_env "${HERDR_ENV:-}" \
-    --arg herdr_session "${HERDR_SESSION:-}" '
+    --arg herdr_session "${HERDR_SESSION:-}" "$FM_LANDED_JQ_DEFS"'
       def arr($x): if ($x | type) == "array" then $x else [] end;
-      def done_state: ((.state // "") | ascii_downcase) == "done";
-      def completion_date: .completion.date // .done // .reported // .merged // null;
       ($b[0] // {}) as $b0
       | ($f[0] // {}) as $f0
-      | (arr($f0.backlog.records)
-          | map(select(done_state and completion_date == $today)
-              | {id,title,repo,kind,completion,artifact:(.report_path // .pr_url // .local_note // "-")})) as $done_today
+      | (arr($b0.omitted)) as $omitted
+      | def omitted_for($prefix): [ $omitted[] | select((.surface // "") | startswith($prefix)) ];
+      (arr($f0.backlog.records)
+          | map(select(landed_record and .completion.date == $today)
+              | {id,title,repo,kind,completion,artifact:(landed_artifact // "-")})) as $done_today
       | {
           schema:"fm-dashboard.v1",
           generated:$generated,
@@ -255,13 +258,13 @@ gather_dashboard_json() {
             calendar:($calendar[0] // {}),
             email:($email[0] // {}),
             seen:{items:($seen[0] // [])},
-            done:{items:arr($b0.landed)},
-            working:{items:arr($b0.in_flight)},
-            next:{items:arr($b0.gates)},
+            done:{items:arr($b0.landed),omitted:omitted_for("landed")},
+            working:{items:arr($b0.in_flight),omitted:omitted_for("in_flight")},
+            next:{items:arr($b0.gates),omitted:omitted_for("gates")},
             today:{
               items:$done_today,
               count:($done_today | length),
-              summary:(if ($done_today | length) == 0 then "No completed or reported work recorded today." else "\(($done_today | length)) completed or reported today." end)
+              summary:(if ($done_today | length) == 0 then "Nothing landed today." else "\(($done_today | length)) landed today." end)
             }
           }
         }
@@ -291,6 +294,12 @@ external_body() { # <json> <widget> <fallback>
       end'
 }
 
+BOUNDED_NOTE_JQ='
+  def bounded_note:
+    (.omitted // [])[]
+    | "\u2026 " + (.surface // "bounded") + " (reveal: " + (.reveal // "-") + ")";
+'
+
 render_dashboard() {
   local json=$1 header body
   header=$(printf '%s' "$json" | jq -r '
@@ -305,13 +314,19 @@ render_dashboard() {
   body=$(external_body "$json" email 'email unavailable')
   panel 'Important emails' "$body"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.working.items[]? | "- \(.name // .id) [\(.repo // "-")] - \(.state // "unknown"): \(.doing // "")"')
+  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.working.items[]? | "- \(.name // .id) [\(.repo // "-")] - \(.state // "unknown"): \(.doing // "")"),
+    (.widgets.working | bounded_note)')
   panel 'Current working tasks' "$body"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.next.items[]? | "- \(.title // .id) [\(.repo // "-")] - \(.reason // .blocked_by // "ready")"')
+  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.next.items[]? | "- \(.title // .id) [\(.repo // "-")] - \(.reason // .blocked_by // "ready")"),
+    (.widgets.next | bounded_note)')
   panel 'Next tasks' "$body"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.done.items[]? | "- \(.what // .id) (\(.owner // "-"))"')
+  body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
+    (.widgets.done.items[]? | "- \(.what // .id) (\(.owner // "-"))"),
+    (.widgets.done | bounded_note)')
   panel 'Done actions' "$body"
 
   body=$(printf '%s' "$json" | jq -r '.widgets.seen.items[]? | "- \(.at): \(.id)" + (if (.note // "") == "" then "" else " - " + .note end)')
