@@ -409,9 +409,12 @@ rendered=$(run_dashboard --force-refresh --refresh-external) \
   || fail "dashboard with a multi-line connector error should render"
 unset FM_DASHBOARD_TEST_TRACEBACK_FAIL
 assert_contains "$rendered" "09:00 Standup" "a multi-line connector error keeps the last good answer"
-assert_contains "$rendered" "RuntimeError: boom)" "a multi-line connector error is reported whole"
+assert_contains "$rendered" "Traceback (most recent call last)" "a multi-line connector error is still reported"
 assert_not_contains "$rendered" "• Traceback" "connector error lines are not rendered as answer bullets"
 assert_not_contains "$rendered" "• RuntimeError" "connector error lines are not rendered as answer bullets"
+assert_not_contains "$rendered" "RuntimeError: boom" "a long connector error is capped rather than printed whole"
+assert_contains "$rendered" "reveal: inspect" "a capped connector error names where to read the rest"
+assert_contains "$rendered" "cache/calendar.json" "the capped connector error points at the widget cache"
 
 # A flag that needs a value must fail rather than silently rendering.
 if run_dashboard --mark-seen >/dev/null 2>"$TMP_ROOT/noid.err"; then
@@ -422,5 +425,13 @@ if run_dashboard --watch >/dev/null 2>"$TMP_ROOT/nowatch.err"; then
   fail "--watch without a value should not exit 0"
 fi
 assert_contains "$(cat "$TMP_ROOT/nowatch.err")" "--watch requires a positive integer" "--watch without a value says so"
+if run_dashboard --mark-seen "" >/dev/null 2>"$TMP_ROOT/emptyid.err"; then
+  fail "--mark-seen with an empty id should not exit 0"
+fi
+assert_contains "$(cat "$TMP_ROOT/emptyid.err")" "--mark-seen requires an id" "--mark-seen with an empty id says so"
+if run_dashboard --watch "" >/dev/null 2>"$TMP_ROOT/emptywatch.err"; then
+  fail "--watch with an empty value should not exit 0"
+fi
+assert_contains "$(cat "$TMP_ROOT/emptywatch.err")" "--watch requires a positive integer" "--watch with an empty value says so"
 
 pass "fm-dashboard"

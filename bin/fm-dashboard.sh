@@ -84,6 +84,7 @@ while [ $# -gt 0 ]; do
     --watch)
       [ $# -ge 2 ] || fail "--watch requires a positive integer"
       shift
+      [ -n "$1" ] || fail "--watch requires a positive integer"
       WATCH_SECONDS=$1
       ;;
     --refresh-external) REFRESH_EXTERNAL=1 ;;
@@ -91,6 +92,7 @@ while [ $# -gt 0 ]; do
     --mark-seen)
       [ $# -ge 2 ] || fail "--mark-seen requires an id"
       shift
+      [ -n "$1" ] || fail "--mark-seen requires an id"
       MARK_SEEN_ID=$1
       ;;
     -h|--help) usage; exit 0 ;;
@@ -460,10 +462,11 @@ panel_box_file() { # <title> <body> <file> <width>
   } > "$file"
 }
 
-render_panel_pair() { # <tmpdir> <column-width-or-0> <left-title> <left-body> <right-title> <right-body>
-  local tmpdir=$1 width=$2 left_title=$3 left_body=$4 right_title=$5 right_body=$6 left right left_lines right_lines
+render_panel_pair() { # <tmpdir> <terminal-columns> <left-title> <left-body> <right-title> <right-body>
+  local tmpdir=$1 cols=$2 left_title=$3 left_body=$4 right_title=$5 right_body=$6 left right left_lines right_lines width=0
   left="$tmpdir/left.$$.panel"
   right="$tmpdir/right.$$.panel"
+  [ "$cols" -ge 118 ] && width=$(( (cols - 1) / 2 ))
   if [ "$width" -gt 0 ]; then
     panel_box_file "$left_title" "$left_body" "$left" "$width"
     panel_box_file "$right_title" "$right_body" "$right" "$width"
@@ -475,8 +478,8 @@ render_panel_pair() { # <tmpdir> <column-width-or-0> <left-title> <left-body> <r
     done
     paste -d ' ' "$left" "$right"
   else
-    panel_box_file "$left_title" "$left_body" "$left" "$(terminal_columns)"
-    panel_box_file "$right_title" "$right_body" "$right" "$(terminal_columns)"
+    panel_box_file "$left_title" "$left_body" "$left" "$cols"
+    panel_box_file "$right_title" "$right_body" "$right" "$cols"
     cat "$left"
     cat "$right"
   fi
@@ -498,17 +501,22 @@ compact_body() { # <body> [limit]
 }
 
 external_body() { # <json> <widget> <fallback>; prints the age/staleness note, then the answer
-  printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" --argjson ttl "$CACHE_TTL_SECONDS" '
+  printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" --argjson ttl "$CACHE_TTL_SECONDS" \
+    --arg cache "$DASH_STATE/cache/$2.json" '
     def age_label($seconds):
       if $seconds < 3600 then "\($seconds / 60 | floor)m"
       elif $seconds < 86400 then "\($seconds / 3600 | floor)h"
       else "\($seconds / 86400 | floor)d"
       end;
     def one_line: gsub("[\\n\\r\\t]+"; " ") | gsub("  +"; " ");
+    def clamp($n):
+      if (length > $n)
+      then (.[:$n] | sub(" +$"; "")) + "… (reveal: inspect " + $cache + ")"
+      else . end;
     (.widgets[$widget] // {}) as $w
     | ($w.answer // "") as $answer
     | ($w.answer_age_seconds // null) as $age
-    | (($w.message // $fallback) | one_line) as $message
+    | (($w.message // $fallback) | one_line | clamp(80)) as $message
     | (if $answer == "" then ""
        elif ($w.ok // false) then
          (if $age != null and $age > $ttl then "(collected " + age_label($age) + " ago)" else "" end)
@@ -539,7 +547,7 @@ BOUNDED_NOTE_JQ='
 
 render_dashboard() {
   local json=$1 header stats calendar_body email_body working_body next_body done_body seen_body today_body
-  local tmpdir cols col_width
+  local tmpdir cols
   header=$(printf '%s' "$json" | jq -r '
     "Firstmate dashboard " + .generated +
     (.fleet as $f
@@ -582,15 +590,10 @@ render_dashboard() {
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-render.XXXXXX") \
     || { printf 'fm-dashboard: cannot create render temp dir\n' >&2; return 1; }
   cols=$(terminal_columns)
-  if [ "$cols" -ge 118 ]; then
-    col_width=$(( (cols - 1) / 2 ))
-  else
-    col_width=0
-  fi
 
-  render_panel_pair "$tmpdir" "$col_width" 'Next calendar events' "$calendar_body" 'Important emails' "$email_body"
-  render_panel_pair "$tmpdir" "$col_width" 'Current working tasks' "$working_body" 'Next tasks' "$next_body"
-  render_panel_pair "$tmpdir" "$col_width" 'Done actions' "$done_body" 'Seen actions' "$seen_body"
+  render_panel_pair "$tmpdir" "$cols" 'Next calendar events' "$calendar_body" 'Important emails' "$email_body"
+  render_panel_pair "$tmpdir" "$cols" 'Current working tasks' "$working_body" 'Next tasks' "$next_body"
+  render_panel_pair "$tmpdir" "$cols" 'Done actions' "$done_body" 'Seen actions' "$seen_body"
   panel_box_file 'Today summary' "$today_body" "$tmpdir/today.panel" "$cols"
   cat "$tmpdir/today.panel"
   rm -rf "$tmpdir"
