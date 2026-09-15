@@ -1,0 +1,25 @@
+$ fm-dashboard.sh --watch 2   (fleet snapshot made unreadable mid-run, then restored)
+renders(header lines)=4
+transient-failure notices=1
+watch process alive after group kill: no
+orphaned children after kill: 81931
+
+--- stderr/notices seen in the watch log ---
+62:fm-dashboard: cannot read bearings snapshot
+63:fm-dashboard: refresh failed; retrying in 2s
+
+--- last render in the loop after recovery ---
+head: illegal line count -- 0
+│ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │ 
+╰─────────────────────────────────────────────────────────╯ 
+╭ Today summary ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◷ 2 landed today.                                                                                                    │
+│ ✓ Ship dashboard panels [(main)] merged https://example.invalid/pr/1                                                 │
+│ ✓ Mate landed calendar widget [mate-a] merged https://example.invalid/pr/9                                           │
+│ … registered secondmates omitted by snapshot bound: 2 (reveal: raise FM_SNAPSHOT_SECONDMATES)                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+$ re-run watch orphan check with settle delay
+renders(header lines)=4
+transient-failure notices=1
+watch process alive after group kill: no
+orphaned children after kill: none

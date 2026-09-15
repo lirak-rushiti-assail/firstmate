@@ -1,0 +1,9 @@
+$ cat cache/calendar.json   (successful answer collected 2 days ago)
+{"generated":"2026-09-13T09:00:00Z","answer_generated":"2026-09-13T09:00:00Z","ok":true,"answer":"- 09:00 Standup (Teams link)\n- 13:00 Herdr dashboard demo","message":null}
+
+$ fm-dashboard.sh   (plain run, no refresh)
+╭ Next calendar events ───────────────────────────────────╮ ╭ Important emails ───────────────────────────────────────╮
+│ • 09:00 Standup (Teams link)                            │ │ • Ada: Please review the dashboard PR (2h, directly     │
+│ • 13:00 Herdr dashboard demo                            │ │ addressed)                                              │
+│ (collected 2d ago)                                      │ │ • Security: quarterly access review due Friday          │
+╰─────────────────────────────────────────────────────────╯ │ (stale for 1m: Traceback (most recent call last): File  │

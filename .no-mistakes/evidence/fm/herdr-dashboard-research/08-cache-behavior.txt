@@ -1,0 +1,11 @@
+$ run 1: --refresh-external (cold)
+   connector calls=1  fleet collections=0
+$ run 2: --refresh-external again inside the 300s window
+   connector calls=1  fleet collections=0  <- reused cache
+$ run 3: same run with FM_SNAPSHOT_SECONDMATES raised (the reveal hint the panels print)
+   fleet collections=1  <- bound change re-collects
+$ run 4: same raised bound again
+Firstmate dashboard 2026-09-15T15:38:34Z · fleet 2m old (cached) · Herdr not detected
+   fleet collections=1  <- matching settings reuse cache
+$ run 5: --force-refresh bypasses both caches
+   connector calls=3  fleet collections=2

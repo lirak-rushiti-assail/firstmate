@@ -1,0 +1,25 @@
+Firstmate dashboard 2026-09-15T15:36:37Z · Herdr not detected
+Work 2  ·  Next 2  ·  Done today 2  ·  Seen 0
+╭ Next calendar events ───────────────────────────────────╮ ╭ Important emails ───────────────────────────────────────╮
+│ • 09:00 Standup (Teams link)                            │ │ • Ada: Please review the dashboard PR (2h, directly     │
+│ • 11:30 Design review with Ada                          │ │ addressed)                                              │
+│ • 13:00 Herdr dashboard demo                            │ │ • Security: quarterly access review due Friday          │
+╰─────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────────────────╯
+╭ Current working tasks ──────────────────────────────────╮ ╭ Next tasks ─────────────────────────────────────────────╮
+│ ● Build Herdr dashboard [firstmate] coding panels       │ │ ◇ Review dashboard PR [mate-a] awaiting review          │
+│ ● Tune snapshot caching [firstmate] benchmarking        │ │ ◇ Write Herdr plugin note [(main)] queued               │
+│ … registered secondmates omitted by snapshot bound: 2   │ │ … registered secondmates omitted by snapshot bound: 2   │
+│ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │ │ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │
+╰─────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────────────────╯
+╭ Done actions ───────────────────────────────────────────╮ ╭ Seen actions ───────────────────────────────────────────╮
+│ ✓ Merged panel width fix ((main))                       │ │ (none)                                                  │
+│ … landed showing 1 of 14 (reveal: --all-landed)         │ ╰─────────────────────────────────────────────────────────╯
+│ … registered secondmates omitted by snapshot bound: 2   │ 
+│ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │ 
+╰─────────────────────────────────────────────────────────╯ 
+╭ Today summary ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◷ 2 landed today.                                                                                                    │
+│ ✓ Ship dashboard panels [(main)] merged https://example.invalid/pr/1                                                 │
+│ ✓ Mate landed calendar widget [mate-a] merged https://example.invalid/pr/9                                           │
+│ … registered secondmates omitted by snapshot bound: 2 (reveal: raise FM_SNAPSHOT_SECONDMATES)                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

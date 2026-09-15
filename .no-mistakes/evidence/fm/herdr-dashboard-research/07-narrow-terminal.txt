@@ -1,0 +1,30 @@
+$ COLUMNS=70 fm-dashboard.sh   (narrow pane -> stacked full-width panels)
+Firstmate dashboard 2026-09-15T15:38:19Z · fleet 1m old (cached) · Herdr not detected
+Work 2  ·  Next 2  ·  Done today 2  ·  Seen 2
+╭ Next calendar events ──────────────────────────────────────────────╮
+│ • 09:00 Standup (Teams link)                                       │
+│ • 13:00 Herdr dashboard demo                                       │
+│ (collected 2d ago)                                                 │
+╰────────────────────────────────────────────────────────────────────╯
+╭ Important emails ──────────────────────────────────────────────────╮
+│ • Ada: Please review the dashboard PR (2h, directly addressed)     │
+│ • Security: quarterly access review due Friday                     │
+│ (stale for 1m: Traceback (most recent call last): File             │
+│ "/Users/x/.agents/skills/claude-connecto… (reveal: inspect         │
+│ /tmp/fm-dash-live.zjmS81/home/state/dashboard/cache/email.json))   │
+╰────────────────────────────────────────────────────────────────────╯
+╭ Current working tasks ─────────────────────────────────────────────╮
+│ ● Build Herdr dashboard [firstmate] coding panels                  │
+│ ● Tune snapshot caching [firstmate] benchmarking                   │
+│ … registered secondmates omitted by snapshot bound: 2 (reveal:     │
+│ raise FM_SNAPSHOT_SECONDMATES)                                     │
+╰────────────────────────────────────────────────────────────────────╯
+╭ Next tasks ────────────────────────────────────────────────────────╮
+│ ◇ Review dashboard PR [mate-a] awaiting review                     │
+│ ◇ Write Herdr plugin note [(main)] queued                          │
+│ … registered secondmates omitted by snapshot bound: 2 (reveal:     │
+│ raise FM_SNAPSHOT_SECONDMATES)                                     │
+╰────────────────────────────────────────────────────────────────────╯
+
+--- widest rendered line (cells) ---
+210 chars

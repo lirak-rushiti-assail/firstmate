@@ -1,0 +1,16 @@
+$ fm-dashboard.sh --mark-seen done-1
+seen: done-1
+$ fm-dashboard.sh --mark-seen ship-2
+seen: ship-2
+
+$ cat state/dashboard/seen.jsonl
+{"at":"2026-09-15T15:36:47Z","id":"done-1"}
+{"at":"2026-09-15T15:36:47Z","id":"ship-2"}
+
+$ fm-dashboard.sh   (Seen panel)
+╭ Done actions ───────────────────────────────────────────╮ ╭ Seen actions ───────────────────────────────────────────╮
+│ ✓ Merged panel width fix ((main))                       │ │ ◉ 2026-09-15T15:36:47Z: ship-2                          │
+│ … landed showing 1 of 14 (reveal: --all-landed)         │ │ ◉ 2026-09-15T15:36:47Z: done-1                          │
+│ … registered secondmates omitted by snapshot bound: 2   │ ╰─────────────────────────────────────────────────────────╯
+│ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │ 
+╰─────────────────────────────────────────────────────────╯ 

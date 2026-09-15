@@ -1,0 +1,43 @@
+$ LAB_TRACEBACK=1 fm-dashboard.sh --force-refresh   (connector outage, 10-line httpx traceback on stderr)
+
+Firstmate dashboard 2026-09-15T15:37:04Z · Herdr not detected
+Work 2  ·  Next 2  ·  Done today 2  ·  Seen 2
+╭ Next calendar events ───────────────────────────────────╮ ╭ Important emails ───────────────────────────────────────╮
+│ • 09:00 Standup (Teams link)                            │ │ • Ada: Please review the dashboard PR (2h, directly     │
+│ • 11:30 Design review with Ada                          │ │ addressed)                                              │
+│ • 13:00 Herdr dashboard demo                            │ │ • Security: quarterly access review due Friday          │
+│ (stale for 0m: Traceback (most recent call last): File  │ │ (stale for 0m: Traceback (most recent call last): File  │
+│ "/Users/x/.agents/skills/claude-connecto… (reveal:      │ │ "/Users/x/.agents/skills/claude-connecto… (reveal:      │
+│ inspect                                                 │ │ inspect                                                 │
+│ /tmp/fm-dash-live.zjmS81/home/state/dashboard/cache/cal │ │ /tmp/fm-dash-live.zjmS81/home/state/dashboard/cache/ema │
+│ endar.json))                                            │ │ il.json))                                               │
+╰─────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────────────────╯
+╭ Current working tasks ──────────────────────────────────╮ ╭ Next tasks ─────────────────────────────────────────────╮
+│ ● Build Herdr dashboard [firstmate] coding panels       │ │ ◇ Review dashboard PR [mate-a] awaiting review          │
+│ ● Tune snapshot caching [firstmate] benchmarking        │ │ ◇ Write Herdr plugin note [(main)] queued               │
+│ … registered secondmates omitted by snapshot bound: 2   │ │ … registered secondmates omitted by snapshot bound: 2   │
+│ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │ │ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │
+╰─────────────────────────────────────────────────────────╯ ╰─────────────────────────────────────────────────────────╯
+╭ Done actions ───────────────────────────────────────────╮ ╭ Seen actions ───────────────────────────────────────────╮
+│ ✓ Merged panel width fix ((main))                       │ │ ◉ 2026-09-15T15:36:47Z: ship-2                          │
+│ … landed showing 1 of 14 (reveal: --all-landed)         │ │ ◉ 2026-09-15T15:36:47Z: done-1                          │
+│ … registered secondmates omitted by snapshot bound: 2   │ ╰─────────────────────────────────────────────────────────╯
+│ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │ 
+╰─────────────────────────────────────────────────────────╯ 
+╭ Today summary ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◷ 2 landed today.                                                                                                    │
+│ ✓ Ship dashboard panels [(main)] merged https://example.invalid/pr/1                                                 │
+│ ✓ Mate landed calendar widget [mate-a] merged https://example.invalid/pr/9                                           │
+│ … registered secondmates omitted by snapshot bound: 2 (reveal: raise FM_SNAPSHOT_SECONDMATES)                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+$ jq -r .message state/dashboard/cache/calendar.json | head -3
+Traceback (most recent call last):
+  File "/Users/x/.agents/skills/claude-connectors/query.py", line 412, in run
+    resp = client.post(url, json=payload, timeout=120)
+  File "httpx/_client.py", line 1145, in post
+    return self.request("POST", url)
+$ jq -r .answer state/dashboard/cache/calendar.json
+- 09:00 Standup (Teams link)
+- 11:30 Design review with Ada
+- 13:00 Herdr dashboard demo

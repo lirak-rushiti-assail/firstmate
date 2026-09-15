@@ -1,0 +1,4 @@
+$ LAB_FLEET_FAIL=1 fm-dashboard.sh   (fleet collection fails, no usable cache)
+fleet: cannot read remote home ledger
+fm-dashboard: cannot read fleet snapshot
+exit=1

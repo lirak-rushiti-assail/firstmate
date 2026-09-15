@@ -1,0 +1,24 @@
+$ printf "{\"at\":\"2026-09-15T10:00:00Z\",\"id\":\"trunc" >> seen.jsonl   (truncated append, e.g. ENOSPC)
+
+$ fm-dashboard.sh   (Seen panel)
+╭ Done actions ───────────────────────────────────────────╮ ╭ Seen actions ───────────────────────────────────────────╮
+│ ✓ Merged panel width fix ((main))                       │ │ … seen ledger unreadable (reveal: inspect               │
+│ … landed showing 1 of 14 (reveal: --all-landed)         │ │ /tmp/fm-dash-live.zjmS81/home/state/dashboard/seen.json │
+│ … registered secondmates omitted by snapshot bound: 2   │ │ l)                                                      │
+│ (reveal: raise FM_SNAPSHOT_SECONDMATES)                 │ ╰─────────────────────────────────────────────────────────╯
+╰─────────────────────────────────────────────────────────╯ 
+╭ Today summary ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ◷ 2 landed today.                                                                                                    │
+
+$ fm-dashboard.sh --json | jq .widgets.seen
+{
+  "items": [],
+  "count": 0,
+  "readable": false,
+  "omitted": [
+    {
+      "surface": "seen ledger unreadable",
+      "reveal": "inspect /tmp/fm-dash-live.zjmS81/home/state/dashboard/seen.jsonl"
+    }
+  ]
+}

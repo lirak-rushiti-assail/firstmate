@@ -1,0 +1,20 @@
+seen.jsonl lines before: 2
+$ fm-dashboard.sh --watch ""
+fm-dashboard: --watch requires a positive integer
+  exit=1  stdout-lines=0
+$ fm-dashboard.sh --mark-seen ""
+fm-dashboard: --mark-seen requires an id
+  exit=1  stdout-lines=0
+$ fm-dashboard.sh --watch
+fm-dashboard: --watch requires a positive integer
+  exit=1  stdout-lines=0
+$ fm-dashboard.sh --mark-seen
+fm-dashboard: --mark-seen requires an id
+  exit=1  stdout-lines=0
+$ fm-dashboard.sh --watch 0
+fm-dashboard: --watch requires a positive integer
+  exit=1  stdout-lines=0
+$ fm-dashboard.sh --watch abc
+fm-dashboard: --watch requires a positive integer
+  exit=1  stdout-lines=0
+seen.jsonl lines after: 2
