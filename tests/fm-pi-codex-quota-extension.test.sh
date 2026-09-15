@@ -13,7 +13,7 @@ trap cleanup EXIT
 
 # A stub quota-axi that records every invocation, so the shared-cache assertion
 # below measures real subprocess fanout rather than the extension's own bookkeeping.
-mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/cache"
+mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/cache-home"
 cat > "$TMP_ROOT/bin/quota-axi" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_QUOTA_AXI_CALLS"
@@ -23,11 +23,12 @@ chmod +x "$TMP_ROOT/bin/quota-axi"
 
 out=$(EXT="$ROOT/.pi/extensions/lib/fm-codex-quota.ts" \
   PATH="$TMP_ROOT/bin:$PATH" \
-  FM_CODEX_QUOTA_CACHE_DIR="$TMP_ROOT/cache" \
+  XDG_CACHE_HOME="$TMP_ROOT/cache-home" \
   FM_QUOTA_AXI_CALLS="$TMP_ROOT/calls" \
   node --input-type=module 2>&1 <<'JS'
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const quota = await import(pathToFileURL(process.env.EXT).href);
@@ -134,8 +135,11 @@ assert.equal(
 
 // Every session shares one host-local snapshot: a second read inside the TTL
 // must not spawn quota-axi again.
-const first = await quota.cachedQuotaAxiJson("codex-quota.json", 60_000, ["--provider", "codex", "--json"]);
-const second = await quota.cachedQuotaAxiJson("codex-quota.json", 60_000, ["--provider", "codex", "--json"]);
+const READ_ONLY_ARGS = ["--provider", "codex", "--json", "--no-credential-refresh"];
+const first = await quota.cachedQuotaAxiJson("codex-quota.json", 60_000, READ_ONLY_ARGS);
+const second = await quota.cachedQuotaAxiJson("codex-quota.json", 60_000, READ_ONLY_ARGS);
+assert.equal(quota.codexQuotaCacheDir(), join(process.env.XDG_CACHE_HOME, "firstmate"));
+assert.ok(existsSync(join(quota.codexQuotaCacheDir(), "codex-quota.json")), "snapshot must land under XDG_CACHE_HOME");
 assert.equal(first.text, second.text);
 assert.equal(second.ageMs < 60_000, true);
 assert.equal(readFileSync(process.env.FM_QUOTA_AXI_CALLS, "utf8").trim().split("\n").length, 1);
@@ -143,15 +147,18 @@ assert.equal(readFileSync(process.env.FM_QUOTA_AXI_CALLS, "utf8").trim().split("
 // An expired entry refreshes, and a concurrent pair still spawns only once more
 // because the loser of the refresh lock serves the previous snapshot.
 const [a, b] = await Promise.all([
-  quota.cachedQuotaAxiJson("codex-quota.json", -1, ["--provider", "codex", "--json"]),
-  quota.cachedQuotaAxiJson("codex-quota.json", -1, ["--provider", "codex", "--json"]),
+  quota.cachedQuotaAxiJson("codex-quota.json", -1, READ_ONLY_ARGS),
+  quota.cachedQuotaAxiJson("codex-quota.json", -1, READ_ONLY_ARGS),
 ]);
 assert.ok(a.text);
 assert.ok(b.text);
 const calls = readFileSync(process.env.FM_QUOTA_AXI_CALLS, "utf8").trim().split("\n");
 assert.equal(calls.length, 2);
-// The Codex indicator never triggers a multi-provider read.
-for (const call of calls) assert.equal(call, "--provider codex --json");
+// The indicator never triggers a multi-provider read, and stays strictly
+// read-only so a passive status tick cannot delegate credential renewal to the
+// Codex vendor CLI (quota-axi --help: --no-credential-refresh keeps a read
+// strictly read-only).
+for (const call of calls) assert.equal(call, "--provider codex --json --no-credential-refresh");
 JS
 )
 status=$?

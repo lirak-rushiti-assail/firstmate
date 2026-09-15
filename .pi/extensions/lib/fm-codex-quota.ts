@@ -295,8 +295,6 @@ function readQuotaAxiJson(args: string[]): Promise<string> {
 type CacheEntry = { text: string; ageMs: number };
 
 export function codexQuotaCacheDir(): string {
-  const override = asString(process.env.FM_CODEX_QUOTA_CACHE_DIR);
-  if (override) return override;
   const base = asString(process.env.XDG_CACHE_HOME) || join(homedir(), ".cache");
   return join(base, "firstmate");
 }
@@ -401,7 +399,7 @@ export function installCodexQuotaIndicator(pi: ExtensionAPI): void {
     if (refreshing || refreshGeneration !== generation || !target.hasUI || !isCodexPiModel(target.model)) return;
     refreshing = true;
     try {
-      const quota = await cachedQuotaAxiJson("codex-quota.json", QUOTA_TTL_MS, ["--provider", "codex", "--json"]);
+      const quota = await cachedQuotaAxiJson("codex-quota.json", QUOTA_TTL_MS, ["--provider", "codex", "--json", "--no-credential-refresh"]);
       const reading = resolveCodexQuota(quota.text, target.model);
       if (refreshGeneration === generation) {
         publish(target, codexQuotaStatusText(target.model, reading, new Date(), quota.ageMs) ?? UNAVAILABLE, !reading);
