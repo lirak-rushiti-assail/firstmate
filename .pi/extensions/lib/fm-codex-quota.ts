@@ -15,7 +15,6 @@ const TIMEOUT_MS = 8_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const INSTALL_KEY = "__firstmateCodexQuotaIndicatorInstalled";
 const CODEX_PROVIDERS = ["openai-codex", "codex-native"];
-const CODEX_PREFIXES = ["openai-codex/", "codex-native/"];
 
 type PiModelLike = {
   provider?: unknown;
@@ -111,22 +110,12 @@ function quotaWindow(label: "5h" | "1w", window: RawQuotaWindow | undefined): Co
 }
 
 export function isCodexPiModel(model: unknown): boolean {
-  if (typeof model === "string") {
-    const name = model.toLowerCase();
-    return CODEX_PREFIXES.some((prefix) => name.startsWith(prefix));
-  }
   if (!model || typeof model !== "object") return false;
-  const candidate = model as PiModelLike;
-  if (CODEX_PROVIDERS.includes(asString(candidate.provider).toLowerCase())) return true;
-  const id = asString(candidate.id).toLowerCase();
-  return CODEX_PREFIXES.some((prefix) => id.startsWith(prefix));
+  return CODEX_PROVIDERS.includes(asString((model as PiModelLike).provider).toLowerCase());
 }
 
 export function codexModelId(model: unknown): string {
-  const raw = typeof model === "string" ? model : asString((model as PiModelLike | null | undefined)?.id);
-  const lower = raw.toLowerCase();
-  const prefix = CODEX_PREFIXES.find((candidate) => lower.startsWith(candidate));
-  return prefix ? lower.slice(prefix.length) : lower;
+  return asString((model as PiModelLike | null | undefined)?.id).toLowerCase();
 }
 
 function parseJson(payload: unknown): unknown {

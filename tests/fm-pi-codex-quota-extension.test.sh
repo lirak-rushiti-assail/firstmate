@@ -36,12 +36,13 @@ const now = new Date("2026-09-15T10:00:00.000Z");
 
 assert.equal(quota.isCodexPiModel({ provider: "openai-codex", id: "gpt-5.3-codex-spark" }), true);
 assert.equal(quota.isCodexPiModel({ provider: "codex-native", id: "gpt-6-astra" }), true);
-assert.equal(quota.isCodexPiModel({ provider: "openai", id: "openai-codex/gpt-5.6-terra" }), true);
-assert.equal(quota.isCodexPiModel("codex-native/gpt-6-astra"), true);
 assert.equal(quota.isCodexPiModel({ provider: "openai", id: "gpt-5.5" }), false);
-// "codex" is not a Pi provider id, and a bare id never names a Codex model on its own.
+// Pi hands the extension a Model with a bare id and a separate provider, so the
+// provider alone decides. "codex" is not a Pi provider id, and a Codex-looking id
+// under another provider never counts.
 assert.equal(quota.isCodexPiModel({ provider: "codex", id: "gpt-5.3-codex" }), false);
-assert.equal(quota.isCodexPiModel({ provider: "openai", id: "codex" }), false);
+assert.equal(quota.isCodexPiModel({ provider: "openai", id: "openai-codex/gpt-5.6-terra" }), false);
+assert.equal(quota.isCodexPiModel(undefined), false);
 assert.equal(quota.codexQuotaStatusText({ provider: "openai", id: "gpt-5.5" }, undefined, now), undefined);
 
 // The exact shape `quota-axi --provider codex --json` emits at schemaVersion 5:
@@ -103,10 +104,8 @@ for (const id of ["gpt-5.3-codex-spark", "gpt-5.6-terra"]) {
   assert.equal(reading.oneWeek.usedPercent, 14);
 }
 
-// A prefixed Pi model id resolves to the same window as the bare one.
-assert.equal(quota.codexModelId("openai-codex/gpt-5.3-codex-spark"), "gpt-5.3-codex-spark");
-const prefixed = quota.resolveCodexQuota(payload, { provider: "openai", id: "openai-codex/gpt-5.3-codex-spark" });
-assert.equal(prefixed.fiveHour.usedPercent, 25);
+// The Pi Model carries a bare id, which is the form window labels name.
+assert.equal(quota.codexModelId({ provider: "openai-codex", id: "GPT-5.3-Codex-Spark" }), "gpt-5.3-codex-spark");
 
 // Stale or unauthenticated provider state fails closed.
 const unusable = { providers: [{ provider: "codex", state: { status: "auth_required" }, windows: [] }] };
