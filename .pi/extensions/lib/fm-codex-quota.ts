@@ -1,12 +1,22 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const STATUS_KEY = "firstmate-codex-quota";
 const UNAVAILABLE = "Codex quota unavailable";
+const MISSING_WINDOW = "no window";
 const REFRESH_MS = 60_000;
+const QUOTA_TTL_MS = 60_000;
+const MODELS_TTL_MS = 6 * 60 * 60_000;
+const STALE_AFTER_MS = 2 * QUOTA_TTL_MS;
+const LOCK_STALE_MS = 30_000;
 const TIMEOUT_MS = 8_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const INSTALL_KEY = "__firstmateCodexQuotaIndicatorInstalled";
+const CODEX_PROVIDERS = ["openai-codex", "codex-native"];
+const CODEX_PREFIXES = ["openai-codex/", "codex-native/"];
 
 type PiModelLike = {
   provider?: unknown;
@@ -15,7 +25,6 @@ type PiModelLike = {
 
 type RawQuotaWindow = {
   id?: unknown;
-  label?: unknown;
   kind?: unknown;
   resetsAt?: unknown;
   percentUsed?: unknown;
@@ -29,6 +38,12 @@ type RawCodexProvider = {
   windows?: unknown;
 };
 
+type RawModelEntry = {
+  provider?: unknown;
+  id?: unknown;
+  effective?: { boundedBy?: unknown };
+};
+
 export type CodexQuotaWindow = {
   label: "5h" | "1w";
   usedPercent: number;
@@ -36,8 +51,8 @@ export type CodexQuotaWindow = {
 };
 
 export type CodexQuotaReading = {
-  fiveHour: CodexQuotaWindow;
-  oneWeek: CodexQuotaWindow;
+  fiveHour?: CodexQuotaWindow;
+  oneWeek?: CodexQuotaWindow;
 };
 
 function asString(value: unknown): string {
@@ -66,49 +81,35 @@ function resetTime(window: RawQuotaWindow): string | undefined {
   return resetsAt;
 }
 
-function scoreFiveHour(window: RawQuotaWindow): number {
-  const id = asString(window.id).toLowerCase();
-  const label = asString(window.label).toLowerCase();
-  const seconds = asNumber(window.windowSeconds);
-  let score = 0;
-  if (seconds === 18_000) score += 100;
-  if (/(^|:)5h$/.test(id)) score += 80;
-  if (label.includes("session")) score += 10;
-  return score;
+function isFiveHourWindow(window: RawQuotaWindow): boolean {
+  if (asNumber(window.windowSeconds) === 18_000) return true;
+  return /(^|:)5h$/.test(asString(window.id).toLowerCase());
 }
 
-function scoreOneWeek(window: RawQuotaWindow): number {
-  const id = asString(window.id).toLowerCase();
-  const label = asString(window.label).toLowerCase();
-  const kind = asString(window.kind).toLowerCase();
-  const seconds = asNumber(window.windowSeconds);
-  let score = 0;
-  if (id === "weekly") score += 500;
-  if (kind === "weekly") score += 300;
-  if (seconds === 604_800) score += 100;
-  if (/(^|:)(7d|week|weekly)$/.test(id)) score += 50;
-  if (label.includes("week")) score += 10;
-  return score;
+function isOneWeekWindow(window: RawQuotaWindow): boolean {
+  if (asString(window.kind).toLowerCase() === "weekly") return true;
+  if (asNumber(window.windowSeconds) === 604_800) return true;
+  return /(^|:)(7d|weekly)$/.test(asString(window.id).toLowerCase());
 }
 
-function selectWindow(
+function mostConstraining(
   windows: RawQuotaWindow[],
-  score: (window: RawQuotaWindow) => number,
+  matches: (window: RawQuotaWindow) => boolean,
 ): RawQuotaWindow | undefined {
-  let selected: RawQuotaWindow | undefined;
-  let selectedScore = 0;
-  for (const window of windows) {
-    if (usedPercent(window) === undefined || resetTime(window) === undefined) continue;
-    const currentScore = score(window);
-    if (currentScore > selectedScore) {
-      selected = window;
-      selectedScore = currentScore;
-    }
-  }
-  return selected;
+  const candidates = windows
+    .filter((window) => matches(window) && usedPercent(window) !== undefined && resetTime(window) !== undefined)
+    .sort((left, right) => {
+      const byUsed = (usedPercent(right) ?? 0) - (usedPercent(left) ?? 0);
+      if (byUsed !== 0) return byUsed;
+      const byReset = Date.parse(resetTime(left) ?? "") - Date.parse(resetTime(right) ?? "");
+      if (byReset !== 0) return byReset;
+      return asString(left.id).localeCompare(asString(right.id));
+    });
+  return candidates[0];
 }
 
-function quotaWindow(label: "5h" | "1w", window: RawQuotaWindow): CodexQuotaWindow | undefined {
+function quotaWindow(label: "5h" | "1w", window: RawQuotaWindow | undefined): CodexQuotaWindow | undefined {
+  if (!window) return undefined;
   const used = usedPercent(window);
   const reset = resetTime(window);
   if (used === undefined || reset === undefined) return undefined;
@@ -118,19 +119,51 @@ function quotaWindow(label: "5h" | "1w", window: RawQuotaWindow): CodexQuotaWind
 export function isCodexPiModel(model: unknown): boolean {
   if (typeof model === "string") {
     const name = model.toLowerCase();
-    return name.startsWith("openai-codex/") || name.startsWith("codex-native/");
+    return CODEX_PREFIXES.some((prefix) => name.startsWith(prefix));
   }
   if (!model || typeof model !== "object") return false;
   const candidate = model as PiModelLike;
-  const provider = asString(candidate.provider).toLowerCase();
+  if (CODEX_PROVIDERS.includes(asString(candidate.provider).toLowerCase())) return true;
   const id = asString(candidate.id).toLowerCase();
-  if (provider === "codex" || provider === "openai-codex" || provider === "codex-native") return true;
-  if (id.startsWith("openai-codex/") || id.startsWith("codex-native/")) return true;
-  return `${provider}/${id}`.startsWith("openai-codex/") || `${provider}/${id}`.startsWith("codex-native/");
+  return CODEX_PREFIXES.some((prefix) => id.startsWith(prefix));
 }
 
-export function parseCodexQuota(payload: unknown): CodexQuotaReading | undefined {
-  const root = typeof payload === "string" ? JSON.parse(payload) : payload;
+export function codexModelId(model: unknown): string {
+  const raw = typeof model === "string" ? model : asString((model as PiModelLike | null | undefined)?.id);
+  const lower = raw.toLowerCase();
+  const prefix = CODEX_PREFIXES.find((candidate) => lower.startsWith(candidate));
+  return prefix ? lower.slice(prefix.length) : lower;
+}
+
+function parseJson(payload: unknown): unknown {
+  return typeof payload === "string" ? JSON.parse(payload) : payload;
+}
+
+/**
+ * Window ids that quota-axi's own model join says bound the active Codex model.
+ * Undefined when the catalog does not describe the model, which is the signal to
+ * report a missing window rather than fall back to another model's budget.
+ */
+export function codexScopeWindowIds(modelsPayload: unknown, model: unknown): string[] | undefined {
+  const root = parseJson(modelsPayload);
+  if (!root || typeof root !== "object") return undefined;
+  const models = (root as { models?: unknown }).models;
+  if (!Array.isArray(models)) return undefined;
+  const wanted = codexModelId(model);
+  if (!wanted) return undefined;
+  const entry = models.find((item): item is RawModelEntry =>
+    Boolean(item) &&
+    typeof item === "object" &&
+    asString((item as RawModelEntry).provider).toLowerCase() === "codex" &&
+    asString((item as RawModelEntry).id).toLowerCase() === wanted,
+  );
+  const boundedBy = entry?.effective?.boundedBy;
+  if (!Array.isArray(boundedBy)) return undefined;
+  return boundedBy.filter((id): id is string => typeof id === "string");
+}
+
+function codexWindows(quotaPayload: unknown): RawQuotaWindow[] | undefined {
+  const root = parseJson(quotaPayload);
   if (!root || typeof root !== "object") return undefined;
   const providers = (root as { providers?: unknown }).providers;
   if (!Array.isArray(providers)) return undefined;
@@ -140,17 +173,23 @@ export function parseCodexQuota(payload: unknown): CodexQuotaReading | undefined
   if (!provider || !Array.isArray(provider.windows)) return undefined;
   if (provider.state?.status !== undefined && provider.state.status !== "fresh") return undefined;
   if (provider.state?.stale === true) return undefined;
+  return provider.windows.filter((item): item is RawQuotaWindow => Boolean(item) && typeof item === "object");
+}
 
-  const windows = provider.windows.filter((item): item is RawQuotaWindow =>
-    Boolean(item) && typeof item === "object",
-  );
-  const fiveHour = selectWindow(windows, scoreFiveHour);
-  const oneWeek = selectWindow(windows, scoreOneWeek);
-  if (!fiveHour || !oneWeek) return undefined;
-  const fiveHourQuota = quotaWindow("5h", fiveHour);
-  const oneWeekQuota = quotaWindow("1w", oneWeek);
-  if (!fiveHourQuota || !oneWeekQuota) return undefined;
-  return { fiveHour: fiveHourQuota, oneWeek: oneWeekQuota };
+export function resolveCodexQuota(
+  quotaPayload: unknown,
+  modelsPayload: unknown,
+  model: unknown,
+): CodexQuotaReading | undefined {
+  const windows = codexWindows(quotaPayload);
+  if (!windows) return undefined;
+  const scopeIds = codexScopeWindowIds(modelsPayload, model);
+  if (!scopeIds) return undefined;
+  const scoped = windows.filter((window) => scopeIds.includes(asString(window.id)));
+  const fiveHour = quotaWindow("5h", mostConstraining(scoped, isFiveHourWindow));
+  const oneWeek = quotaWindow("1w", mostConstraining(scoped, isOneWeekWindow));
+  if (!fiveHour && !oneWeek) return undefined;
+  return { fiveHour, oneWeek };
 }
 
 function twoDigits(value: number): string {
@@ -171,20 +210,39 @@ export function formatPercent(value: number): string {
   return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
 }
 
-export function formatCodexQuota(reading: CodexQuotaReading, now = new Date()): string {
-  return `Codex 5h ${formatPercent(reading.fiveHour.usedPercent)} used reset ${formatResetTime(reading.fiveHour.resetsAt, now)} | 1w ${formatPercent(reading.oneWeek.usedPercent)} used reset ${formatResetTime(reading.oneWeek.resetsAt, now)}`;
+export function formatAge(ageMs: number): string {
+  const seconds = Math.max(0, Math.round(ageMs / 1000));
+  if (seconds < 90) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `${minutes}m`;
+  return `${Math.round(minutes / 60)}h`;
 }
 
-export function codexQuotaStatusText(model: unknown, reading: CodexQuotaReading | undefined, now = new Date()): string | undefined {
+function formatWindow(label: "5h" | "1w", window: CodexQuotaWindow | undefined, now: Date): string {
+  if (!window) return `${label} ${MISSING_WINDOW}`;
+  return `${label} ${formatPercent(window.usedPercent)} used reset ${formatResetTime(window.resetsAt, now)}`;
+}
+
+export function formatCodexQuota(reading: CodexQuotaReading, now = new Date(), ageMs = 0): string {
+  const text = `Codex ${formatWindow("5h", reading.fiveHour, now)} | ${formatWindow("1w", reading.oneWeek, now)}`;
+  return ageMs >= STALE_AFTER_MS ? `${text} (stale ${formatAge(ageMs)})` : text;
+}
+
+export function codexQuotaStatusText(
+  model: unknown,
+  reading: CodexQuotaReading | undefined,
+  now = new Date(),
+  ageMs = 0,
+): string | undefined {
   if (!isCodexPiModel(model)) return undefined;
-  return reading ? formatCodexQuota(reading, now) : UNAVAILABLE;
+  return reading ? formatCodexQuota(reading, now, ageMs) : UNAVAILABLE;
 }
 
-function readQuotaAxiJson(): Promise<string> {
+function readQuotaAxiJson(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
-      child = spawn("quota-axi", ["--provider", "codex", "--json"], {
+      child = spawn("quota-axi", args, {
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
@@ -232,11 +290,92 @@ function readQuotaAxiJson(): Promise<string> {
   });
 }
 
-function modelFromContext(ctx: ExtensionContext): PiModelLike | undefined {
-  return (ctx.model as PiModelLike | undefined) ?? {
-    provider: process.env.PI_PROVIDER,
-    id: process.env.PI_MODEL,
-  };
+type CacheEntry = { text: string; ageMs: number };
+
+export function codexQuotaCacheDir(): string {
+  const override = asString(process.env.FM_CODEX_QUOTA_CACHE_DIR);
+  if (override) return override;
+  const base = asString(process.env.XDG_CACHE_HOME) || join(homedir(), ".cache");
+  return join(base, "firstmate");
+}
+
+function readCache(file: string): CacheEntry | undefined {
+  try {
+    const age = Date.now() - statSync(file).mtimeMs;
+    return { text: readFileSync(file, "utf8"), ageMs: Math.max(0, age) };
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCache(file: string, text: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(tmp, text);
+    renameSync(tmp, file);
+  } catch {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      /* the temp file is best-effort cleanup only */
+    }
+  }
+}
+
+function acquireLock(file: string): boolean {
+  const lock = `${file}.lock`;
+  try {
+    mkdirSync(lock);
+    return true;
+  } catch {
+    try {
+      if (Date.now() - statSync(lock).mtimeMs <= LOCK_STALE_MS) return false;
+      rmSync(lock, { recursive: true, force: true });
+      mkdirSync(lock);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function releaseLock(file: string): void {
+  try {
+    rmSync(`${file}.lock`, { recursive: true, force: true });
+  } catch {
+    /* a leaked lock expires on its own after LOCK_STALE_MS */
+  }
+}
+
+/**
+ * One bounded refresh path shared by every Pi session on this host: a fresh
+ * cache entry is reused as is, and only the lock holder spawns quota-axi while
+ * the others read the last snapshot and report its age.
+ */
+export async function cachedQuotaAxiJson(name: string, ttlMs: number, args: string[]): Promise<CacheEntry> {
+  const file = join(codexQuotaCacheDir(), name);
+  const cached = readCache(file);
+  if (cached && cached.ageMs <= ttlMs) return cached;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+  } catch {
+    /* an unwritable cache directory still allows a direct read below */
+  }
+  if (!acquireLock(file)) {
+    if (cached) return cached;
+    throw new Error("quota-axi refresh is already in flight");
+  }
+  try {
+    const text = await readQuotaAxiJson(args);
+    writeCache(file, text);
+    return { text, ageMs: 0 };
+  } catch (error) {
+    if (cached) return cached;
+    throw error;
+  } finally {
+    releaseLock(file);
+  }
 }
 
 export function installCodexQuotaIndicator(pi: ExtensionAPI): void {
@@ -252,23 +391,27 @@ export function installCodexQuotaIndicator(pi: ExtensionAPI): void {
   const clear = (target: ExtensionContext): void => target.ui.setStatus(STATUS_KEY, undefined);
 
   const publish = (target: ExtensionContext, text: string, unavailable = false): void => {
-    if (target !== ctx || !target.hasUI || !isCodexPiModel(modelFromContext(target))) return;
+    if (target !== ctx || !target.hasUI || !isCodexPiModel(target.model)) return;
     target.ui.setStatus(STATUS_KEY, target.ui.theme.fg(unavailable ? "warning" : "dim", text));
   };
 
   const refresh = async (target: ExtensionContext, refreshGeneration: number): Promise<void> => {
-    if (refreshing || refreshGeneration !== generation || !target.hasUI || !isCodexPiModel(modelFromContext(target))) return;
+    if (refreshing || refreshGeneration !== generation || !target.hasUI || !isCodexPiModel(target.model)) return;
     refreshing = true;
     try {
-      const reading = parseCodexQuota(await readQuotaAxiJson());
+      const [quota, models] = await Promise.all([
+        cachedQuotaAxiJson("codex-quota.json", QUOTA_TTL_MS, ["--provider", "codex", "--json"]),
+        cachedQuotaAxiJson("codex-models.json", MODELS_TTL_MS, ["models", "--json"]),
+      ]);
+      const reading = resolveCodexQuota(quota.text, models.text, target.model);
       if (refreshGeneration === generation) {
-        publish(target, codexQuotaStatusText(modelFromContext(target), reading) ?? UNAVAILABLE, !reading);
+        publish(target, codexQuotaStatusText(target.model, reading, new Date(), quota.ageMs) ?? UNAVAILABLE, !reading);
       }
     } catch {
       if (refreshGeneration === generation) publish(target, UNAVAILABLE, true);
     } finally {
       refreshing = false;
-      if (refreshGeneration !== generation && ctx && isCodexPiModel(modelFromContext(ctx))) {
+      if (refreshGeneration !== generation && ctx && isCodexPiModel(ctx.model)) {
         void refresh(ctx, generation);
       }
     }
@@ -290,7 +433,7 @@ export function installCodexQuotaIndicator(pi: ExtensionAPI): void {
   const apply = (target: ExtensionContext): void => {
     ctx = target;
     generation += 1;
-    if (!target.hasUI || !isCodexPiModel(modelFromContext(target))) {
+    if (!target.hasUI || !isCodexPiModel(target.model)) {
       stopTimer();
       clear(target);
       return;
