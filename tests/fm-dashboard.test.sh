@@ -19,6 +19,8 @@ FAKEBIN="$TMP_ROOT/fakebin"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$FAKEBIN"
 CALLS="$TMP_ROOT/m365-calls"
 : > "$CALLS"
+COLLECTIONS="$TMP_ROOT/fleet-collections"
+: > "$COLLECTIONS"
 
 cat > "$TMP_ROOT/bearings.json" <<JSON
 {
@@ -52,6 +54,10 @@ JSON
 cat > "$FAKEBIN/bearings" <<'SH'
 #!/usr/bin/env bash
 [ "${1:-}" = --json ] || exit 2
+[ -n "${FM_BEARINGS_SNAPSHOT_JSON:-}" ] \
+  || { echo "bearings: dashboard collected no snapshot to project" >&2; exit 3; }
+cmp -s "$FM_BEARINGS_SNAPSHOT_JSON" "$FM_DASHBOARD_TEST_FLEET" \
+  || { echo "bearings: injected snapshot differs from the collected one" >&2; exit 4; }
 cat "$FM_DASHBOARD_TEST_BEARINGS"
 SH
 chmod +x "$FAKEBIN/bearings"
@@ -59,6 +65,7 @@ chmod +x "$FAKEBIN/bearings"
 cat > "$FAKEBIN/fleet" <<'SH'
 #!/usr/bin/env bash
 [ "${1:-}" = --json ] || exit 2
+printf 'collect\n' >> "$FM_DASHBOARD_TEST_COLLECTIONS"
 cat "$FM_DASHBOARD_TEST_FLEET"
 SH
 chmod +x "$FAKEBIN/fleet"
@@ -87,14 +94,19 @@ run_dashboard() {
     FM_DASHBOARD_TEST_BEARINGS="$TMP_ROOT/bearings.json" \
     FM_DASHBOARD_TEST_FLEET="$TMP_ROOT/fleet.json" \
     FM_DASHBOARD_TEST_CALLS="$CALLS" \
+    FM_DASHBOARD_TEST_COLLECTIONS="$COLLECTIONS" \
     PYTHON_BIN=bash \
     "$DASHBOARD" "$@"
 }
 
 connector_calls() { [ -s "$CALLS" ] && wc -l < "$CALLS" | tr -d ' ' || printf '0'; }
+fleet_collections() { [ -s "$COLLECTIONS" ] && wc -l < "$COLLECTIONS" | tr -d ' ' || printf '0'; }
 
 json=$(run_dashboard --json) || fail "dashboard JSON should render"
 assert_equals "fm-dashboard.v1" "$(printf '%s' "$json" | jq -r '.schema')" "schema is reported"
+# One render collects the canonical fleet snapshot once and hands that same
+# collection to the bearings projection (the fake bearings fails otherwise).
+assert_equals "1" "$(fleet_collections)" "one render collects the fleet snapshot once"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.working.items | length')" "working widget uses bearings snapshot"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.next.items | length')" "next widget uses bearings gates"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.done.items | length')" "done widget uses landed rows"

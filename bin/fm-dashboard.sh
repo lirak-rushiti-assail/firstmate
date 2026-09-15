@@ -10,8 +10,11 @@
 # terminal, including a Herdr pane, and needs no Herdr plugin or TUI API today.
 # A Herdr plugin launcher can come later without changing this projection.
 #
-# The dashboard reads this home's fleet state through fm-bearings-snapshot.sh and
-# fm-fleet-snapshot.sh, then renders those panels.
+# The dashboard collects the canonical fm-fleet-snapshot.sh document once per
+# refresh and projects it twice: directly for the today summary, and through
+# fm-bearings-snapshot.sh (FM_BEARINGS_SNAPSHOT_JSON) for the underway, gate, and
+# landed panels, so every panel describes the same instant and one refresh costs one
+# remote-ledger collection.
 # Microsoft 365 calendar and mail reads are optional and read-only: pass
 # --refresh-external to refresh private cache files under state/dashboard/ through
 # ~/.agents/skills/claude-connectors/query.py, which reuses a cached widget while it
@@ -210,10 +213,12 @@ gather_dashboard_json() {
     refresh_external
   fi
 
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" "$BEARINGS_CMD" --json > "$bearings" \
-    || { rm -rf "$tmpdir"; fail "cannot read bearings snapshot"; }
-  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" "$FLEET_CMD" --json > "$fleet" \
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_SNAPSHOT_NOW="$now" \
+    "$FLEET_CMD" --json > "$fleet" \
     || { rm -rf "$tmpdir"; fail "cannot read fleet snapshot"; }
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_BEARINGS_NOW="$now" \
+    FM_BEARINGS_SNAPSHOT_JSON="$fleet" "$BEARINGS_CMD" --json > "$bearings" \
+    || { rm -rf "$tmpdir"; fail "cannot read bearings snapshot"; }
   cache_file_or_placeholder "$DASH_STATE/cache/calendar.json" "Run fm-dashboard.sh --refresh-external to populate calendar events." > "$calendar"
   cache_file_or_placeholder "$DASH_STATE/cache/email.json" "Run fm-dashboard.sh --refresh-external to populate important emails." > "$email"
   make_seen_json "$seen"

@@ -87,6 +87,12 @@
 #   --all-pr-repos   query every discovered repository under --include-prs
 #   -h,--help        usage
 #
+# FM_BEARINGS_SNAPSHOT_JSON=<file> projects an already-collected
+# `fm-fleet-snapshot.v1` document instead of collecting one, so a caller that also
+# needs the canonical snapshot pays for a single collection and both projections
+# describe the same instant. It serves the default collection only: --all-landed and
+# --all-secondmates collect under different bounds and reject it.
+#
 # Output contract: `fm-bearings.v1`. No locks or reports; the underlying snapshot's
 # parent-side remote-ledger cache refresh is the only default fleet-state mutation.
 set -u
@@ -229,7 +235,16 @@ if [ "$GUARD_RC" -eq 4 ]; then
 fi
 
 NOW=${FM_BEARINGS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-if [ "$ALL_LANDED" = 1 ] || [ "$ALL_SECONDMATES" = 1 ]; then
+if [ -n "${FM_BEARINGS_SNAPSHOT_JSON:-}" ]; then
+  if [ "$ALL_LANDED" = 1 ] || [ "$ALL_SECONDMATES" = 1 ]; then
+    echo "fm-bearings-snapshot: FM_BEARINGS_SNAPSHOT_JSON cannot serve --all-landed or --all-secondmates; those need their own collection" >&2
+    exit 2
+  fi
+  SNAP=$(cat "$FM_BEARINGS_SNAPSHOT_JSON") \
+    || { echo "fm-bearings-snapshot: cannot read FM_BEARINGS_SNAPSHOT_JSON: $FM_BEARINGS_SNAPSHOT_JSON" >&2; exit 1; }
+  printf '%s' "$SNAP" | jq -e '.schema == "fm-fleet-snapshot.v1"' >/dev/null 2>&1 \
+    || { echo "fm-bearings-snapshot: FM_BEARINGS_SNAPSHOT_JSON is not an fm-fleet-snapshot.v1 document" >&2; exit 1; }
+elif [ "$ALL_LANDED" = 1 ] || [ "$ALL_SECONDMATES" = 1 ]; then
   if [ "$ALL_LANDED" = 1 ]; then
     SNAP=$(FM_SNAPSHOT_NOW="$NOW" FM_SNAPSHOT_SECONDMATES=0 FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME=0 "$FLEET" --json) || exit $?
   else

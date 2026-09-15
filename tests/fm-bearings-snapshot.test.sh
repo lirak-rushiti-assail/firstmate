@@ -1041,6 +1041,52 @@ EOF
   pass "repeated snapshots keep the same current landed baseline and ignore prior reports"
 }
 
+test_injected_snapshot_is_projected_instead_of_collected() {
+  local home fakebin canonical injected bad json
+  home=$(make_home injected-snapshot)
+  : > "$home/data/secondmates.md"
+  mkdir -p "$home/projects/main-wt"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] main-ship - Collected title (repo: firstmate) (kind: ship) (since 2026-07-09)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$home/state/main-ship.meta" \
+    "window=firstmate:fm-main-ship" "worktree=$home/projects/main-wt" "project=firstmate" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$home/state" main-ship busy
+  printf 'working: projecting an injected snapshot\n' > "$home/state/main-ship.status"
+
+  fakebin=$(make_fakebin "$home")
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "canonical snapshot should collect"
+  injected="$home/injected-snapshot.json"
+  printf '%s' "$canonical" \
+    | jq '(.tasks[] | select(.id == "main-ship") | .backlog.title) |= "Injected title"' > "$injected"
+
+  json=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
+    FM_BEARINGS_SNAPSHOT_JSON="$injected" "$BEARINGS" --json) \
+    || fail "bearings should project an injected canonical snapshot"
+  printf '%s' "$json" | jq -e '.in_flight | any(.id == "main-ship" and .name == "Injected title")' >/dev/null \
+    || fail "bearings must project the injected snapshot rather than collect a new one: $json"
+
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
+    FM_BEARINGS_SNAPSHOT_JSON="$injected" "$BEARINGS" --json --all-landed >/dev/null 2>&1; then
+    fail "--all-landed needs its own collection and must reject an injected snapshot"
+  fi
+
+  bad="$home/not-a-snapshot.json"
+  printf '{"schema":"something-else"}\n' > "$bad"
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
+    FM_BEARINGS_SNAPSHOT_JSON="$bad" "$BEARINGS" --json >/dev/null 2>&1; then
+    fail "bearings must reject an injected document that is not fm-fleet-snapshot.v1"
+  fi
+  pass "injected canonical snapshot replaces the wrapper's own collection"
+}
+
 test_default_is_bounded_and_local_only() {
   local home fakebin toon json backlog
   home=$(make_home bounded); write_fixture "$home"
@@ -3328,6 +3374,7 @@ test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
 test_default_is_bounded_and_local_only
+test_injected_snapshot_is_projected_instead_of_collected
 test_toon_json_parity
 test_landed_includes_secondmate_home_merges
 test_landed_accepts_only_kind_owned_delivery_artifacts
