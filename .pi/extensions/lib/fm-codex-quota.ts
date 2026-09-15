@@ -118,12 +118,8 @@ export function codexModelId(model: unknown): string {
   return asString((model as PiModelLike | null | undefined)?.id).toLowerCase();
 }
 
-function parseJson(payload: unknown): unknown {
-  return typeof payload === "string" ? JSON.parse(payload) : payload;
-}
-
-function codexProvider(quotaPayload: unknown): RawCodexProvider | undefined {
-  const root = parseJson(quotaPayload);
+function codexProvider(quotaText: string): RawCodexProvider | undefined {
+  const root: unknown = JSON.parse(quotaText);
   if (!root || typeof root !== "object") return undefined;
   const providers = (root as { providers?: unknown }).providers;
   if (!Array.isArray(providers)) return undefined;
@@ -165,8 +161,8 @@ function windowModelId(window: RawQuotaWindow): string {
     .replace(/[\s_]+/g, "-");
 }
 
-export function resolveCodexQuota(quotaPayload: unknown, model: unknown): CodexQuotaReading | undefined {
-  const provider = codexProvider(quotaPayload);
+export function resolveCodexQuota(quotaText: string, model: unknown): CodexQuotaReading | undefined {
+  const provider = codexProvider(quotaText);
   if (!provider) return undefined;
   const windows = (provider.windows as unknown[]).filter(
     (item): item is RawQuotaWindow => Boolean(item) && typeof item === "object",

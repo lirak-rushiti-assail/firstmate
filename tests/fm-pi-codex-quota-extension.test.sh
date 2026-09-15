@@ -74,7 +74,7 @@ const payload = {
 // A Pi model that owns a model-level window shows its own five-hour limit. The
 // quota-axi curated catalog has no `gpt-5.3-codex-spark` entry, so this is the
 // regression: keying on that catalog rendered every real session unavailable.
-const spark = quota.resolveCodexQuota(payload, { provider: "openai-codex", id: "gpt-5.3-codex-spark" });
+const spark = quota.resolveCodexQuota(JSON.stringify(payload), { provider: "openai-codex", id: "gpt-5.3-codex-spark" });
 assert.ok(spark);
 assert.equal(spark.fiveHour.usedPercent, 25);
 assert.equal(
@@ -87,7 +87,7 @@ assert.equal(
 // model in the family), and reports the five-hour window as missing rather than
 // borrowing another model's session budget.
 for (const id of ["gpt-5.6-terra", "gpt-5.4", "gpt-6-astra"]) {
-  const reading = quota.resolveCodexQuota(payload, { provider: "openai-codex", id });
+  const reading = quota.resolveCodexQuota(JSON.stringify(payload), { provider: "openai-codex", id });
   assert.ok(reading, "expected a reading for " + id);
   assert.equal(reading.fiveHour, undefined, id + " must not borrow another model 5h window");
   assert.equal(
@@ -99,7 +99,7 @@ for (const id of ["gpt-5.6-terra", "gpt-5.4", "gpt-6-astra"]) {
 // The 1% remaining gpt-reserve week belongs to another model, so it never becomes
 // any Pi session's one-week limit.
 for (const id of ["gpt-5.3-codex-spark", "gpt-5.6-terra"]) {
-  const reading = quota.resolveCodexQuota(payload, { provider: "openai-codex", id });
+  const reading = quota.resolveCodexQuota(JSON.stringify(payload), { provider: "openai-codex", id });
   assert.equal(reading.oneWeek.resetsAt, "2026-09-20T12:20:26.000Z");
   assert.equal(reading.oneWeek.usedPercent, 14);
 }
@@ -109,14 +109,14 @@ assert.equal(quota.codexModelId({ provider: "openai-codex", id: "GPT-5.3-Codex-S
 
 // Stale or unauthenticated provider state fails closed.
 const unusable = { providers: [{ provider: "codex", state: { status: "auth_required" }, windows: [] }] };
-assert.equal(quota.resolveCodexQuota(unusable, { provider: "openai-codex", id: "gpt-5.5" }), undefined);
+assert.equal(quota.resolveCodexQuota(JSON.stringify(unusable), { provider: "openai-codex", id: "gpt-5.5" }), undefined);
 assert.equal(
-  quota.resolveCodexQuota({ providers: [{ provider: "codex", state: { status: "fresh", stale: true }, windows: [] }] }, { provider: "openai-codex", id: "gpt-5.5" }),
+  quota.resolveCodexQuota(JSON.stringify({ providers: [{ provider: "codex", state: { status: "fresh", stale: true }, windows: [] }] }), { provider: "openai-codex", id: "gpt-5.5" }),
   undefined,
 );
 // A payload with no account scope and no matching model window has nothing to show.
 assert.equal(
-  quota.resolveCodexQuota({ providers: [{ provider: "codex", state: { status: "fresh" }, windows: payload.providers[0].windows }] }, { provider: "openai-codex", id: "gpt-5.4" }),
+  quota.resolveCodexQuota(JSON.stringify({ providers: [{ provider: "codex", state: { status: "fresh" }, windows: payload.providers[0].windows }] }), { provider: "openai-codex", id: "gpt-5.4" }),
   undefined,
 );
 assert.equal(
