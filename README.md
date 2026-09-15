@@ -124,6 +124,8 @@ Those Calm-hidden operational inputs remain ordinary user-role messages with unc
 The preference persists for the effective Firstmate home, and toggling it off restores ordinary rendering.
 [Calm's current behavior and supported limits](docs/calm.md) are separate from its [version-scoped maintainer evidence](docs/calm-mode-feasibility.md).
 Pi's `/supervision-model` command pins a cheaper model and a shallower reasoning effort for the supervision branch alone, from the eligible models and thinking levels Pi itself reports, and with no pin the branch normally follows your own conversation's model and effort; see the [configuration schema](docs/configuration.md#pi-supervision-branch-model-and-effort-configsupervision-branch-model-configsupervision-branch-effort).
+Every Pi and pi-signed session, including workers and secondmates, shows a Codex quota status line while the active model's provider is a Codex one, and shows nothing at all for any other provider.
+It reports the percentage used and the next reset for the five-hour and one-week windows, reading `quota-axi` about once a minute through a shared home-local cache; the read is strictly read-only, so expired Codex credentials show `Codex quota unavailable` instead of triggering a vendor sign-in, and a window the provider does not expose for the active model reads `no window` rather than borrowing another model's number.
 
 ### Talk to it
 

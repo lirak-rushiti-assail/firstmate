@@ -346,7 +346,8 @@ For Kimi crews, `fm-spawn.sh` runs `fm-kimi-turnend-hook.sh install`, drops a pe
 Kimi continues to use the captain's normal Kimi home, including the existing config, skills, and memory; Firstmate does not create an isolated Kimi home.
 The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config.toml`, `python3` with `tomllib`, and `jq`; it validates but never serializes the captain's TOML and refuses before writing when the config is missing, malformed, or surprising or when either tool requirement is unavailable.
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
-For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
+For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts`, `.pi/extensions/fm-primary-turnend-guard.ts`, and `.pi/extensions/fm-codex-quota.ts`, all already present from the secondmate home's git worktree.
+Pi and pi-signed crew launches carry the same `.pi/extensions/fm-codex-quota.ts` from the tracked Firstmate root beside their own `state/` turn-end extension, so every Pi-family session shows the Codex quota status line described in [README.md](../README.md).
 For omp secondmate launches, `fm-spawn.sh` passes no `-e` at all: omp auto-discovers the home's tracked `.omp/extensions/` with no trust gate, and naming a discovered file with `-e` as well loads it twice; every omp launch instead carries the tracked `.omp/fm-worker-overlay.yml` posture overlay through `--config`, which [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns.
 
 ## Claude permission mode (config/claude-permission-mode)

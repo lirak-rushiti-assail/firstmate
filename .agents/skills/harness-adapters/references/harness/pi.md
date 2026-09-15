@@ -38,6 +38,7 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 
 `../../../bin/fm-spawn.sh` keeps the worker turn-end extension in `state/`, outside the worktree, because project-local extension files worsen the trust gate and pollute the project.
 The extension listens for Pi's `turn_end` event, not `agent_end`, so supervision is notified after each completed turn rather than only when the whole run exits.
+A Pi or pi-signed crew launch also carries `-e` at the tracked Firstmate root's `.pi/extensions/fm-codex-quota.ts`, which adds the Codex quota status line and nothing else; naming it explicitly keeps it out of the worker worktree and its trust gate.
 Native-harness progress uses the separate generation-bound marker owned by `../../../bin/fm-busy-event.sh`; it never fabricates Pi turn completion.
 Pi sets `PI_CODING_AGENT=true` for its children as its harness-detection marker.
 
@@ -55,6 +56,6 @@ Native-harness adapters can discover the same guarded FirstMate tools and operat
 The tool result and clean-exit fallback are owned by `../../../docs/supervision-protocols/pi.md`.
 `../../../bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both extensions and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
 
-When a secondmate is launched on Pi or Pi-signed, `../../../bin/fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`.
-Both files already exist in the secondmate home's git worktree.
+When a secondmate is launched on Pi or Pi-signed, `../../../bin/fm-spawn.sh --secondmate` launches the selected executable with `-e .pi/extensions/fm-primary-turnend-guard.ts`, `-e .pi/extensions/fm-primary-pi-watch.ts`, and `-e .pi/extensions/fm-codex-quota.ts`.
+All three files already exist in the secondmate home's git worktree.
 The PreToolUse-equivalent watcher-arm seatbelt returns `{block: true}` from the `tool_call` event.
