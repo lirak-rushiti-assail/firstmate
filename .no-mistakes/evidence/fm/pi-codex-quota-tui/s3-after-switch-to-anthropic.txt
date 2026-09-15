@@ -1,0 +1,40 @@
+
+[Skills]
+  afk, ahoy, ask-user-authority, bearings, bootstrap-diagnostics, captain-hold-lifecycle, chisle, chisle-audit, chisle-help, chisle-review, claude-connectors,
+decision-hold-lifecycle, dev, diagnostic-reasoning, find-skills, firstmate-codexapp, firstmate-coding-guidelines, firstmate-orca, fmx-respond, harness-adapters,
+linear, logfire-instrumentation, logfire-query, miro-mcp, no-mistakes, playwright-cli, ponytail, ponytail-review, process-event-sources, project-management,
+quiet, quota-array-dispatch, secondmate-provisioning, stow, stuck-crewmate-recovery, updatefirstmate
+
+[Extensions]
+  chisle:pi-extension, fm-branch-supervision.ts, fm-calm.ts, fm-codex-quota.ts, fm-primary-pi-watch.ts, fm-primary-turnend-guard.ts, herdr-agent-state.ts
+
+
+ Warning: tmux extended-keys is off. Modified Enter keys may not work. Add `set -g extended-keys on` to ~/.tmux.conf and restart tmux.
+
+ Model: claude-haiku-4-5
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.no-mistakes/worktrees/74c0006e260b/01M2JFWCRHW97J7YJRVKGSGV7K (detached)
+0.0%/200k                                                                                                                    (anthropic) claude-haiku-4-5 • high
+[CHISLE]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

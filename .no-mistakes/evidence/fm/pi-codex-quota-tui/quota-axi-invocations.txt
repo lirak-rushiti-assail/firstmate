@@ -1,0 +1,22 @@
+# quota-axi invocations recorded by a PATH shim while real Pi TUI sessions ran
+
+## single Codex session (fmq3)
+--provider codex --json --no-credential-refresh
+--provider codex --json --no-credential-refresh
+--provider codex --json --no-credential-refresh
+
+## worker-style launch: pi -ne -e <abs>/.pi/extensions/fm-codex-quota.ts (fmq7)
+--provider codex --json --no-credential-refresh
+
+## two concurrent Codex sessions sharing XDG_CACHE_HOME (fmq6a + fmq6b), cold cache
+--provider codex --json --no-credential-refresh
+--provider codex --json --no-credential-refresh
+
+## non-Codex (anthropic) session: no shim invocation, no cache file
+ls: /tmp/fmq.wkvF5i/cache2: No such file or directory
+
+## live quota-axi source values for cross-check
+weekly week 75 2026-09-20T12:20:26.000Z
+model:codex_bengalfox:5h GPT-5.3-Codex-Spark session 100 2026-09-15T17:41:42.000Z
+model:codex_bengalfox:7d GPT-5.3-Codex-Spark week 100 2026-09-22T12:41:42.000Z
+model:base_model_inference:7d gpt-reserve week 100 2026-09-17T18:26:52.000Z
