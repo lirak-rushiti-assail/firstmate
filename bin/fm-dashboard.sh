@@ -3,7 +3,7 @@
 #
 # Usage:
 #   fm-dashboard.sh [--json] [--watch <seconds>] [--refresh-external|--force-refresh]
-#   fm-dashboard.sh --mark-seen <id> [--note <text>]
+#   fm-dashboard.sh --mark-seen <id>
 #   fm-dashboard.sh --help
 #
 # The dashboard is terminal-first: it renders plain ANSI panels that work in any
@@ -55,7 +55,6 @@ WATCH_SECONDS=
 REFRESH_EXTERNAL=0
 FORCE_REFRESH=0
 MARK_SEEN_ID=
-MARK_SEEN_NOTE=
 
 usage() {
   awk '
@@ -86,10 +85,6 @@ while [ $# -gt 0 ]; do
       shift
       MARK_SEEN_ID=${1:-}
       ;;
-    --note)
-      shift
-      MARK_SEEN_NOTE=${1:-}
-      ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -117,8 +112,8 @@ mark_seen() {
   local tmp at
   tmp=$(mktemp "$DASH_STATE/.seen.XXXXXX") || fail "cannot create seen marker"
   at=$(now_utc)
-  jq -nc --arg at "$at" --arg id "$MARK_SEEN_ID" --arg note "$MARK_SEEN_NOTE" \
-    '{at:$at,id:$id,note:$note}' > "$tmp" || { rm -f "$tmp"; fail "cannot encode seen marker"; }
+  jq -nc --arg at "$at" --arg id "$MARK_SEEN_ID" \
+    '{at:$at,id:$id}' > "$tmp" || { rm -f "$tmp"; fail "cannot encode seen marker"; }
   cat "$tmp" >> "$DASH_STATE/seen.jsonl" || { rm -f "$tmp"; fail "cannot append seen marker"; }
   rm -f "$tmp"
   printf 'seen: %s\n' "$MARK_SEEN_ID"
@@ -388,7 +383,7 @@ render_dashboard() {
   panel 'Done actions' "$body"
 
   body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.seen.items[]? | "- \(.at): \(.id)" + (if (.note // "") == "" then "" else " - " + .note end)),
+    (.widgets.seen.items[]? | "- \(.at): \(.id)"),
     (.widgets.seen | bounded_note)')
   panel 'Seen actions' "$body"
 

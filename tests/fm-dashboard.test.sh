@@ -210,11 +210,10 @@ assert_contains "$rendered" "Next task [mate-a]" "next panel names the home that
 assert_contains "$rendered" "awaiting review" "next panel renders the gate reason"
 assert_not_contains "$rendered" "task paths" "unrelated omitted surfaces are not rendered as panel truncation"
 
-seen_out=$(run_dashboard --mark-seen email-123 --note 'handled locally') || fail "mark seen should succeed"
+seen_out=$(run_dashboard --mark-seen email-123) || fail "mark seen should succeed"
 assert_contains "$seen_out" "seen: email-123" "mark seen reports id"
 json=$(run_dashboard --json) || fail "dashboard JSON after seen marker should render"
 assert_equals "email-123" "$(printf '%s' "$json" | jq -r '.widgets.seen.items[0].id')" "seen marker appears in dashboard"
-assert_equals "handled locally" "$(printf '%s' "$json" | jq -r '.widgets.seen.items[0].note')" "seen marker note appears in dashboard"
 assert_equals "0" "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted | length')" "an unbounded seen ledger discloses nothing"
 
 # The Seen panel keeps the most recent 12 markers; past that it must say so rather
