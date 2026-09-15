@@ -244,15 +244,16 @@ gather_dashboard_json() {
       | def panel_key:
           if startswith("landed") or startswith("secondmate home Done capped") then "done"
           elif startswith("in_flight") or startswith("main in-flight")
-            or startswith("secondmates showing") or startswith("registered secondmates omitted")
             or test("^secondmate .+ active children omitted") then "working"
           elif startswith("gates") then "next"
           else null end;
       def bounds_every_panel:
           startswith("secondmate registry")
+          or startswith("registered secondmates omitted")
           or startswith("secondmate home(s) with unreadable structured state")
           or startswith("secondmate parent activity evidence")
-          or startswith("main unstructured current backlog");
+          or startswith("main unstructured current backlog")
+          or test(" served from cached home ledger$");
       def omitted_for($panel):
           [ $omitted[]
             | (.surface // "") as $surface

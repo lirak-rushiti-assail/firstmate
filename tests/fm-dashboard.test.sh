@@ -42,6 +42,10 @@ cat > "$TMP_ROOT/bearings.json" <<JSON
     {"surface":"gates showing 1 of 25","reveal":"--all-queued"},
     {"surface":"secondmate home Done capped at the snapshot layer for 2 home(s)","reveal":"--all-landed"},
     {"surface":"secondmate registry unavailable: read failed","reveal":"inspect data/secondmates.md"},
+    {"surface":"registered secondmates omitted by snapshot bound: 2","reveal":"raise FM_SNAPSHOT_SECONDMATES"},
+    {"surface":"secondmate mate-b served from cached home ledger","reveal":"inspect the home ledger publication and remote route"},
+    {"surface":"secondmates showing 5 of 20","reveal":"--all-secondmates"},
+    {"surface":"secondmate mate-c active children omitted by snapshot bound: 3","reveal":"raise FM_SNAPSHOT_SECONDMATE_CHILDREN"},
     {"surface":"task paths","reveal":"--fields paths"}
   ]
 }
@@ -149,6 +153,20 @@ assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.working.omitted[] | 
 for w in "done" "working" "next"; do
   assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate registry unavailable"))] | length')" "unavailable registry is disclosed on the $w panel"
 done
+
+# A home dropped by the snapshot bound contributes no underway, gate, or landed
+# rows, so every panel is short and every panel must say so. The same holds for a
+# home served from its cached ledger: its rows are present but stale.
+for w in "done" "working" "next"; do
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("registered secondmates omitted"))] | length')" "snapshot-bound home drop is disclosed on the $w panel"
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | endswith("served from cached home ledger"))] | length')" "cached home ledger is disclosed on the $w panel"
+done
+
+# FM_BEARINGS_SECONDMATES caps only the bearings "secondmates" section, which this
+# dashboard never renders, so it must not warn that complete panels are short.
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets[] | objects | .omitted // [] | .[] | select(.surface | startswith("secondmates showing"))] | length')" "a cap on an unrendered section warns on no panel"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.working.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children bound only the working panel"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.next.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children do not bound the next panel"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
 
 rendered=$(run_dashboard) || fail "dashboard terminal view should render"
