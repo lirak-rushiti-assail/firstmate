@@ -33,9 +33,9 @@ import { pathToFileURL } from "node:url";
 const quota = await import(pathToFileURL(process.env.EXT).href);
 const now = new Date("2026-09-15T10:00:00.000Z");
 
-assert.equal(quota.isCodexPiModel({ provider: "openai-codex", id: "gpt-5.3-codex" }), true);
+assert.equal(quota.isCodexPiModel({ provider: "openai-codex", id: "gpt-5.3-codex-spark" }), true);
 assert.equal(quota.isCodexPiModel({ provider: "codex-native", id: "gpt-6-astra" }), true);
-assert.equal(quota.isCodexPiModel({ provider: "openai", id: "openai-codex/gpt-5.3-codex" }), true);
+assert.equal(quota.isCodexPiModel({ provider: "openai", id: "openai-codex/gpt-5.6-terra" }), true);
 assert.equal(quota.isCodexPiModel("codex-native/gpt-6-astra"), true);
 assert.equal(quota.isCodexPiModel({ provider: "openai", id: "gpt-5.5" }), false);
 // "codex" is not a Pi provider id, and a bare id never names a Codex model on its own.
@@ -43,77 +43,92 @@ assert.equal(quota.isCodexPiModel({ provider: "codex", id: "gpt-5.3-codex" }), f
 assert.equal(quota.isCodexPiModel({ provider: "openai", id: "codex" }), false);
 assert.equal(quota.codexQuotaStatusText({ provider: "openai", id: "gpt-5.5" }, undefined, now), undefined);
 
-// The shapes quota-axi actually emits: per-model windows plus an account-wide one,
-// and the models join that says which windows bound each model.
-const quotaPayload = {
+// The exact shape `quota-axi --provider codex --json` emits at schemaVersion 5:
+// percentRemaining only, no percentUsed and no windowSeconds, with the
+// account-wide scope carried in quotaSemantics.effectiveAvailability.
+const payload = {
   schemaVersion: 5,
   providers: [{
     provider: "codex",
+    plan: "prolite",
     state: { status: "fresh", stale: false },
     windows: [
       { id: "weekly", label: "week", kind: "weekly", resetsAt: "2026-09-20T12:20:26.000Z", percentRemaining: 86 },
-      { id: "model:codex_bengalfox:5h", label: "GPT-5.3-Codex session", kind: "model", resetsAt: "2026-09-15T15:31:42.000Z", percentRemaining: 75 },
-      { id: "model:codex_bengalfox:7d", label: "GPT-5.3-Codex week", kind: "model", resetsAt: "2026-09-22T10:31:42.000Z", percentUsed: 3 },
-      { id: "model:base_model_inference:7d", label: "gpt-reserve week", kind: "model", resetsAt: "2026-09-17T18:26:52.000Z", percentUsed: 99 },
+      { id: "model:codex_bengalfox:5h", label: "GPT-5.3-Codex-Spark session", kind: "model", resetsAt: "2026-09-15T15:31:42.000Z", percentRemaining: 75 },
+      { id: "model:codex_bengalfox:7d", label: "GPT-5.3-Codex-Spark week", kind: "model", resetsAt: "2026-09-22T10:31:42.000Z", percentRemaining: 97 },
+      { id: "model:base_model_inference:7d", label: "gpt-reserve week", kind: "model", resetsAt: "2026-09-17T18:26:52.000Z", percentRemaining: 1 },
     ],
+    quotaSemantics: {
+      status: "known",
+      effectiveAvailability: [
+        { scope: "all_models", status: "known", boundedBy: ["weekly"], limitingWindowIds: ["weekly"] },
+        { scope: "model:codex_bengalfox", status: "known", boundedBy: ["weekly", "model:codex_bengalfox:5h", "model:codex_bengalfox:7d"] },
+        { scope: "model:base_model_inference", status: "known", boundedBy: ["weekly", "model:base_model_inference:7d"] },
+      ],
+    },
   }],
 };
-const modelsPayload = {
-  models: [
-    {
-      provider: "codex",
-      id: "gpt-5.3-codex",
-      effective: { boundedBy: ["weekly", "model:codex_bengalfox:5h", "model:codex_bengalfox:7d"] },
-    },
-    { provider: "codex", id: "gpt-5.1-codex", effective: { boundedBy: ["weekly"] } },
-    { provider: "claude", id: "claude-opus-4-5", quotaScopes: [] },
-  ],
-};
 
-const scoped = quota.resolveCodexQuota(quotaPayload, modelsPayload, { provider: "openai-codex", id: "gpt-5.3-codex" });
-assert.ok(scoped);
-assert.equal(scoped.fiveHour.usedPercent, 25);
+// A Pi model that owns a model-level window shows its own five-hour limit. The
+// quota-axi curated catalog has no `gpt-5.3-codex-spark` entry, so this is the
+// regression: keying on that catalog rendered every real session unavailable.
+const spark = quota.resolveCodexQuota(payload, { provider: "openai-codex", id: "gpt-5.3-codex-spark" });
+assert.ok(spark);
+assert.equal(spark.fiveHour.usedPercent, 25);
 assert.equal(
-  quota.formatCodexQuota(scoped, now),
+  quota.formatCodexQuota(spark, now),
   "Codex 5h 25% used reset 15:31Z | 1w 14% used reset 2026-09-20 12:20Z",
 );
-// The gpt-reserve week is 99% used but does not bound this model, so it must not
-// be reported as the session's one-week limit.
-assert.equal(scoped.oneWeek.resetsAt, "2026-09-20T12:20:26.000Z");
 
-// A model bounded only by the account-wide weekly window has no five-hour window.
-const weeklyOnly = quota.resolveCodexQuota(quotaPayload, modelsPayload, { provider: "openai-codex", id: "gpt-5.1-codex" });
-assert.ok(weeklyOnly);
-assert.equal(weeklyOnly.fiveHour, undefined);
+// A Pi model with no model-level window still shows the account-wide weekly limit
+// (docs/verification/dispatch-auth.md: the Codex all_models scope covers every
+// model in the family), and reports the five-hour window as missing rather than
+// borrowing another model's session budget.
+for (const id of ["gpt-5.6-terra", "gpt-5.4", "gpt-6-astra"]) {
+  const reading = quota.resolveCodexQuota(payload, { provider: "openai-codex", id });
+  assert.ok(reading, "expected a reading for " + id);
+  assert.equal(reading.fiveHour, undefined, id + " must not borrow another model 5h window");
+  assert.equal(
+    quota.formatCodexQuota(reading, now),
+    "Codex 5h no window | 1w 14% used reset 2026-09-20 12:20Z",
+  );
+}
+
+// The 1% remaining gpt-reserve week belongs to another model, so it never becomes
+// any Pi session's one-week limit.
+for (const id of ["gpt-5.3-codex-spark", "gpt-5.6-terra"]) {
+  const reading = quota.resolveCodexQuota(payload, { provider: "openai-codex", id });
+  assert.equal(reading.oneWeek.resetsAt, "2026-09-20T12:20:26.000Z");
+  assert.equal(reading.oneWeek.usedPercent, 14);
+}
+
+// A prefixed Pi model id resolves to the same window as the bare one.
+assert.equal(quota.codexModelId("openai-codex/gpt-5.3-codex-spark"), "gpt-5.3-codex-spark");
+const prefixed = quota.resolveCodexQuota(payload, { provider: "openai", id: "openai-codex/gpt-5.3-codex-spark" });
+assert.equal(prefixed.fiveHour.usedPercent, 25);
+
+// Stale or unauthenticated provider state fails closed.
+const unusable = { providers: [{ provider: "codex", state: { status: "auth_required" }, windows: [] }] };
+assert.equal(quota.resolveCodexQuota(unusable, { provider: "openai-codex", id: "gpt-5.5" }), undefined);
 assert.equal(
-  quota.formatCodexQuota(weeklyOnly, now),
-  "Codex 5h no window | 1w 14% used reset 2026-09-20 12:20Z",
+  quota.resolveCodexQuota({ providers: [{ provider: "codex", state: { status: "fresh", stale: true }, windows: [] }] }, { provider: "openai-codex", id: "gpt-5.5" }),
+  undefined,
 );
-
-// A model the catalog does not describe reports unavailable instead of borrowing
-// another model's windows.
-assert.equal(quota.resolveCodexQuota(quotaPayload, modelsPayload, { provider: "openai-codex", id: "gpt-9-unknown" }), undefined);
+// A payload with no account scope and no matching model window has nothing to show.
 assert.equal(
-  quota.codexQuotaStatusText({ provider: "openai-codex", id: "gpt-9-unknown" }, undefined, now),
+  quota.resolveCodexQuota({ providers: [{ provider: "codex", state: { status: "fresh" }, windows: payload.providers[0].windows }] }, { provider: "openai-codex", id: "gpt-5.4" }),
+  undefined,
+);
+assert.equal(
+  quota.codexQuotaStatusText({ provider: "openai-codex", id: "gpt-5.4" }, undefined, now),
   "Codex quota unavailable",
 );
 
-// A prefixed Pi model id resolves to the same catalog entry as the bare one.
-assert.equal(quota.codexModelId("openai-codex/gpt-5.3-codex"), "gpt-5.3-codex");
-assert.deepEqual(
-  quota.codexScopeWindowIds(modelsPayload, { provider: "openai", id: "openai-codex/gpt-5.1-codex" }),
-  ["weekly"],
-);
-
-// Stale provider state and unparseable payloads fail closed.
-assert.equal(quota.resolveCodexQuota({ providers: [{ provider: "codex", state: { status: "auth_required" }, windows: [] }] }, modelsPayload, { provider: "openai-codex", id: "gpt-5.3-codex" }), undefined);
-assert.equal(quota.resolveCodexQuota({ providers: [{ provider: "codex", state: { status: "fresh", stale: true }, windows: [] }] }, modelsPayload, { provider: "openai-codex", id: "gpt-5.3-codex" }), undefined);
-
-assert.equal(quota.formatPercent(12.34), "12.3%");
+assert.equal(quota.formatPercent(12.35), "12.4%");
 assert.equal(quota.formatResetTime("2026-09-15T12:00:00.000Z", now), "12:00Z");
 assert.equal(quota.formatResetTime("not-a-time", now), "unknown");
 assert.equal(
-  quota.formatCodexQuota(scoped, now, 600_000),
+  quota.formatCodexQuota(spark, now, 600_000),
   "Codex 5h 25% used reset 15:31Z | 1w 14% used reset 2026-09-20 12:20Z (stale 10m)",
 );
 
@@ -133,7 +148,10 @@ const [a, b] = await Promise.all([
 ]);
 assert.ok(a.text);
 assert.ok(b.text);
-assert.equal(readFileSync(process.env.FM_QUOTA_AXI_CALLS, "utf8").trim().split("\n").length, 2);
+const calls = readFileSync(process.env.FM_QUOTA_AXI_CALLS, "utf8").trim().split("\n");
+assert.equal(calls.length, 2);
+// The Codex indicator never triggers a multi-provider read.
+for (const call of calls) assert.equal(call, "--provider codex --json");
 JS
 )
 status=$?

@@ -9,7 +9,6 @@ const UNAVAILABLE = "Codex quota unavailable";
 const MISSING_WINDOW = "no window";
 const REFRESH_MS = 60_000;
 const QUOTA_TTL_MS = 60_000;
-const MODELS_TTL_MS = 6 * 60 * 60_000;
 const STALE_AFTER_MS = 2 * QUOTA_TTL_MS;
 const LOCK_STALE_MS = 30_000;
 const TIMEOUT_MS = 8_000;
@@ -25,23 +24,22 @@ type PiModelLike = {
 
 type RawQuotaWindow = {
   id?: unknown;
+  label?: unknown;
   kind?: unknown;
   resetsAt?: unknown;
-  percentUsed?: unknown;
   percentRemaining?: unknown;
-  windowSeconds?: unknown;
+};
+
+type RawScope = {
+  scope?: unknown;
+  boundedBy?: unknown;
 };
 
 type RawCodexProvider = {
   provider?: unknown;
   state?: { status?: unknown; stale?: unknown };
   windows?: unknown;
-};
-
-type RawModelEntry = {
-  provider?: unknown;
-  id?: unknown;
-  effective?: { boundedBy?: unknown };
+  quotaSemantics?: { effectiveAvailability?: unknown };
 };
 
 export type CodexQuotaWindow = {
@@ -68,8 +66,6 @@ function clampPercent(value: number): number {
 }
 
 function usedPercent(window: RawQuotaWindow): number | undefined {
-  const used = asNumber(window.percentUsed);
-  if (used !== undefined) return clampPercent(used);
   const remaining = asNumber(window.percentRemaining);
   if (remaining === undefined) return undefined;
   return clampPercent(100 - remaining);
@@ -82,13 +78,11 @@ function resetTime(window: RawQuotaWindow): string | undefined {
 }
 
 function isFiveHourWindow(window: RawQuotaWindow): boolean {
-  if (asNumber(window.windowSeconds) === 18_000) return true;
   return /(^|:)5h$/.test(asString(window.id).toLowerCase());
 }
 
 function isOneWeekWindow(window: RawQuotaWindow): boolean {
   if (asString(window.kind).toLowerCase() === "weekly") return true;
-  if (asNumber(window.windowSeconds) === 604_800) return true;
   return /(^|:)(7d|weekly)$/.test(asString(window.id).toLowerCase());
 }
 
@@ -139,30 +133,7 @@ function parseJson(payload: unknown): unknown {
   return typeof payload === "string" ? JSON.parse(payload) : payload;
 }
 
-/**
- * Window ids that quota-axi's own model join says bound the active Codex model.
- * Undefined when the catalog does not describe the model, which is the signal to
- * report a missing window rather than fall back to another model's budget.
- */
-export function codexScopeWindowIds(modelsPayload: unknown, model: unknown): string[] | undefined {
-  const root = parseJson(modelsPayload);
-  if (!root || typeof root !== "object") return undefined;
-  const models = (root as { models?: unknown }).models;
-  if (!Array.isArray(models)) return undefined;
-  const wanted = codexModelId(model);
-  if (!wanted) return undefined;
-  const entry = models.find((item): item is RawModelEntry =>
-    Boolean(item) &&
-    typeof item === "object" &&
-    asString((item as RawModelEntry).provider).toLowerCase() === "codex" &&
-    asString((item as RawModelEntry).id).toLowerCase() === wanted,
-  );
-  const boundedBy = entry?.effective?.boundedBy;
-  if (!Array.isArray(boundedBy)) return undefined;
-  return boundedBy.filter((id): id is string => typeof id === "string");
-}
-
-function codexWindows(quotaPayload: unknown): RawQuotaWindow[] | undefined {
+function codexProvider(quotaPayload: unknown): RawCodexProvider | undefined {
   const root = parseJson(quotaPayload);
   if (!root || typeof root !== "object") return undefined;
   const providers = (root as { providers?: unknown }).providers;
@@ -173,21 +144,52 @@ function codexWindows(quotaPayload: unknown): RawQuotaWindow[] | undefined {
   if (!provider || !Array.isArray(provider.windows)) return undefined;
   if (provider.state?.status !== undefined && provider.state.status !== "fresh") return undefined;
   if (provider.state?.stale === true) return undefined;
-  return provider.windows.filter((item): item is RawQuotaWindow => Boolean(item) && typeof item === "object");
+  return provider;
 }
 
-export function resolveCodexQuota(
-  quotaPayload: unknown,
-  modelsPayload: unknown,
-  model: unknown,
-): CodexQuotaReading | undefined {
-  const windows = codexWindows(quotaPayload);
-  if (!windows) return undefined;
-  const scopeIds = codexScopeWindowIds(modelsPayload, model);
-  if (!scopeIds) return undefined;
-  const scoped = windows.filter((window) => scopeIds.includes(asString(window.id)));
-  const fiveHour = quotaWindow("5h", mostConstraining(scoped, isFiveHourWindow));
-  const oneWeek = quotaWindow("1w", mostConstraining(scoped, isOneWeekWindow));
+/**
+ * Window ids of the account-wide `all_models` scope. Every model in the Codex
+ * family is bound by these, which is what lets the weekly limit render for a Pi
+ * model that owns no model-level window of its own.
+ */
+function accountWindowIds(provider: RawCodexProvider): string[] {
+  const scopes = provider.quotaSemantics?.effectiveAvailability;
+  if (!Array.isArray(scopes)) return [];
+  const account = scopes.find((item): item is RawScope =>
+    Boolean(item) && typeof item === "object" && asString((item as RawScope).scope) === "all_models",
+  );
+  const boundedBy = account?.boundedBy;
+  if (!Array.isArray(boundedBy)) return [];
+  return boundedBy.filter((id): id is string => typeof id === "string");
+}
+
+/**
+ * The Pi model id a model-level window names in its own label, so a window is
+ * only ever attributed to the model quota-axi itself says it belongs to.
+ * "GPT-5.3-Codex-Spark session" names gpt-5.3-codex-spark.
+ */
+function windowModelId(window: RawQuotaWindow): string {
+  return asString(window.label)
+    .toLowerCase()
+    .replace(/\s+(session|week|weekly)$/, "")
+    .trim()
+    .replace(/[\s_]+/g, "-");
+}
+
+export function resolveCodexQuota(quotaPayload: unknown, model: unknown): CodexQuotaReading | undefined {
+  const provider = codexProvider(quotaPayload);
+  if (!provider) return undefined;
+  const windows = (provider.windows as unknown[]).filter(
+    (item): item is RawQuotaWindow => Boolean(item) && typeof item === "object",
+  );
+  const accountIds = accountWindowIds(provider);
+  const activeId = codexModelId(model);
+  const applicable = windows.filter(
+    (window) =>
+      accountIds.includes(asString(window.id)) || (activeId !== "" && windowModelId(window) === activeId),
+  );
+  const fiveHour = quotaWindow("5h", mostConstraining(applicable, isFiveHourWindow));
+  const oneWeek = quotaWindow("1w", mostConstraining(applicable, isOneWeekWindow));
   if (!fiveHour && !oneWeek) return undefined;
   return { fiveHour, oneWeek };
 }
@@ -399,11 +401,8 @@ export function installCodexQuotaIndicator(pi: ExtensionAPI): void {
     if (refreshing || refreshGeneration !== generation || !target.hasUI || !isCodexPiModel(target.model)) return;
     refreshing = true;
     try {
-      const [quota, models] = await Promise.all([
-        cachedQuotaAxiJson("codex-quota.json", QUOTA_TTL_MS, ["--provider", "codex", "--json"]),
-        cachedQuotaAxiJson("codex-models.json", MODELS_TTL_MS, ["models", "--json"]),
-      ]);
-      const reading = resolveCodexQuota(quota.text, models.text, target.model);
+      const quota = await cachedQuotaAxiJson("codex-quota.json", QUOTA_TTL_MS, ["--provider", "codex", "--json"]);
+      const reading = resolveCodexQuota(quota.text, target.model);
       if (refreshGeneration === generation) {
         publish(target, codexQuotaStatusText(target.model, reading, new Date(), quota.ageMs) ?? UNAVAILABLE, !reading);
       }
