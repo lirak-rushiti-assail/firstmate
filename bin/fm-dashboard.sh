@@ -26,7 +26,8 @@
 # is younger than the freshness window (default 300s, FM_DASHBOARD_CACHE_TTL), so a
 # --watch loop does not re-query the connector on every tick. --force-refresh
 # bypasses that window. A failed refresh keeps the last good answer and reports the
-# error alongside it.
+# error alongside it, with the age of that answer, so a connector outage never makes
+# a stale agenda read as current.
 # Seen actions are local-only markers under state/dashboard/seen.jsonl.
 # The script never mutates backlog, task state, calendar, mail, GitHub, Linear, or
 # any Herdr session state.
@@ -49,6 +50,7 @@ M365_HELPER="${FM_DASHBOARD_M365_HELPER:-$HOME/.agents/skills/claude-connectors/
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CACHE_TTL_SECONDS="${FM_DASHBOARD_CACHE_TTL:-300}"
 SEEN_LIMIT=12
+SEEN_READABLE=1
 
 FORMAT=terminal
 WATCH_SECONDS=
@@ -157,14 +159,20 @@ cache_last_good_answer() { # <path>
   jq -r '.answer // "" | if type == "string" then . else "" end' "$1" 2>/dev/null
 }
 
+cache_answer_generated() { # <path>
+  [ -s "$1" ] || return 0
+  jq -r '(.answer_generated // .generated // "") | if type == "string" then . else "" end' "$1" 2>/dev/null
+}
+
 refresh_m365_cache() { # <kind> <prompt> <dest>
-  local kind=$1 prompt=$2 dest=$3 out rc tmp last_good
+  local kind=$1 prompt=$2 dest=$3 out rc tmp last_good last_good_at
   ensure_state
   if [ "$FORCE_REFRESH" != 1 ] && cache_is_fresh "$dest"; then
     return 0
   fi
   tmp=$(mktemp "$DASH_STATE/cache/.${kind}.XXXXXX") || fail "cannot create cache file"
   last_good=$(cache_last_good_answer "$dest")
+  last_good_at=$(cache_answer_generated "$dest")
   if [ ! -f "$M365_HELPER" ]; then
     out="M365 helper not found: $M365_HELPER"
     rc=1
@@ -174,11 +182,14 @@ refresh_m365_cache() { # <kind> <prompt> <dest>
   fi
   if [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
     printf '%s' "$out" | jq -c --arg generated "$(now_utc)" \
-      '{generated:$generated,ok:(.ok == true),answer:(.answer // ""),message:null}' > "$tmp" \
+      '{generated:$generated,answer_generated:$generated,ok:(.ok == true),answer:(.answer // ""),message:null}' > "$tmp" \
       || { rm -f "$tmp"; fail "cannot parse $kind connector output"; }
   else
     jq -nc --arg generated "$(now_utc)" --arg message "$out" --arg answer "$last_good" \
-      '{generated:$generated,ok:false,answer:(if $answer == "" then null else $answer end),message:$message}' > "$tmp" \
+      --arg answer_generated "$last_good_at" \
+      '{generated:$generated,
+        answer_generated:(if $answer == "" or $answer_generated == "" then null else $answer_generated end),
+        ok:false,answer:(if $answer == "" then null else $answer end),message:$message}' > "$tmp" \
       || { rm -f "$tmp"; fail "cannot write $kind connector error"; }
   fi
   mv "$tmp" "$dest" || fail "cannot publish $kind cache"
@@ -195,12 +206,12 @@ refresh_external() {
 
 make_seen_json() { # <dest>
   local dest=$1
-  if [ -s "$DASH_STATE/seen.jsonl" ]; then
-    jq -s 'map(select(type == "object")) | reverse' "$DASH_STATE/seen.jsonl" > "$dest" \
-      || printf '[]\n' > "$dest"
-  else
-    printf '[]\n' > "$dest"
-  fi
+  SEEN_READABLE=1
+  [ -s "$DASH_STATE/seen.jsonl" ] || { printf '[]\n' > "$dest"; return 0; }
+  jq -s 'map(select(type == "object")) | reverse' "$DASH_STATE/seen.jsonl" > "$dest" 2>/dev/null \
+    && return 0
+  SEEN_READABLE=0
+  printf '[]\n' > "$dest"
 }
 
 gather_dashboard_json() {
@@ -257,6 +268,8 @@ gather_dashboard_json() {
     --arg generated "$now" \
     --arg fleet_generated "$fleet_generated" \
     --arg seen_path "$DASH_STATE/seen.jsonl" \
+    --argjson seen_readable "$SEEN_READABLE" \
+    --arg now_epoch "$(date -u +%s)" \
     --argjson seen_limit "$SEEN_LIMIT" \
     --argjson fleet_age "$fleet_age" \
     --argjson fleet_cached "$fleet_cached" \
@@ -280,6 +293,14 @@ gather_dashboard_json() {
             or startswith("secondmate home(s) with unreadable structured state")
             or test(" served from cached home ledger$") then ["done","working","next","today"]
           else [] end;
+      def with_answer_age:
+          ($now_epoch | tonumber) as $now
+          | . + {answer_age_seconds:
+              ((.answer_generated // null) as $t
+               | if ($t | type) != "string" then null
+                 else (try ($t | fromdateiso8601) catch null) as $at
+                      | if $at == null then null else ($now - $at) end
+                 end)};
       def omitted_for($panel):
           [ $omitted[] | select((((.surface // "") | panels_bounded) | index($panel)) != null) ];
       ((arr($f0.backlog.records)
@@ -299,14 +320,16 @@ gather_dashboard_json() {
             session:(if $herdr_session != "" then $herdr_session else null end)
           },
           widgets:{
-            calendar:($calendar[0] // {}),
-            email:($email[0] // {}),
+            calendar:(($calendar[0] // {}) | with_answer_age),
+            email:(($email[0] // {}) | with_answer_age),
             seen:{
               items:(($seen[0] // [])[:$seen_limit]),
               omitted:(($seen[0] // []) | length as $n
-                | if $n > $seen_limit
-                  then [{surface:"seen showing \($seen_limit) of \($n)",reveal:("inspect " + $seen_path)}]
-                  else [] end)
+                | (if $n > $seen_limit
+                   then [{surface:"seen showing \($seen_limit) of \($n)",reveal:("inspect " + $seen_path)}]
+                   else [] end)
+                + (if $seen_readable == 1 then []
+                   else [{surface:"seen ledger unreadable",reveal:("inspect " + $seen_path)}] end))
             },
             done:{items:arr($b0.landed),omitted:omitted_for("done")},
             working:{items:arr($b0.in_flight),omitted:omitted_for("working")},
@@ -339,9 +362,12 @@ external_body() { # <json> <widget> <fallback>
   printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" '
     (.widgets[$widget] // {}) as $w
     | ($w.answer // "") as $answer
+    | ($w.answer_age_seconds // null) as $age
     | if $answer == "" then ($w.message // $fallback)
       elif ($w.ok // false) then $answer
-      else $answer + "\n(stale: " + ($w.message // $fallback) + ")"
+      else $answer + "\n(stale"
+           + (if $age == null then "" else " for \(($age / 60 | floor))m" end)
+           + ": " + ($w.message // $fallback) + ")"
       end'
 }
 

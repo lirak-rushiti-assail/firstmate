@@ -266,10 +266,17 @@ assert_contains "$(printf '%s' "$json" | jq -r '.widgets.email.answer')" "Please
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector refused" "a repeated failure still reports the current error"
 json=$(run_dashboard --json --force-refresh) || fail "third failed refresh should still render"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "the last good answer survives a prolonged outage"
+
+# A carried-forward answer keeps the instant it was actually good, so a prolonged
+# outage cannot present a stale agenda as current.
+assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer_generated == .widgets.calendar.generated')" "a failed refresh does not restamp the answer as freshly collected"
+assert_equals "true" "$(printf '%s' "$json" | jq -r '(.widgets.calendar.answer_age_seconds // -1) >= 0')" "a carried-forward answer reports its age"
+rendered=$(run_dashboard) || fail "terminal view during an outage should render"
+assert_contains "$rendered" "stale for " "the stale answer names how old it is"
 unset FM_DASHBOARD_TEST_FAIL
 rendered=$(run_dashboard) || fail "terminal view should render after a failed refresh"
 assert_contains "$rendered" "Standup" "stale answer still rendered"
-assert_contains "$rendered" "stale:" "stale answer is marked stale"
+assert_contains "$rendered" "(stale" "stale answer is marked stale"
 
 # The fleet collection obeys the same freshness window as the connector, so a
 # --watch tick redraws from the cached snapshot instead of re-reading every
@@ -290,5 +297,14 @@ export FM_DASHBOARD_CACHE_TTL=0
 json=$(run_dashboard --json) || fail "zero-ttl fleet render should succeed"
 assert_equals "$((collected + 2))" "$(fleet_collections)" "zero freshness window always re-collects the fleet snapshot"
 unset FM_DASHBOARD_CACHE_TTL
+
+# A seen ledger that cannot be parsed must not read as "nothing marked seen".
+printf 'not json at all\n' >> "$HOME_DIR/state/dashboard/seen.jsonl"
+json=$(run_dashboard --json) || fail "dashboard with an unreadable seen ledger should render"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '.widgets.seen.items | length')" "an unreadable seen ledger yields no items"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable")] | length')" "an unreadable seen ledger is disclosed"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable") | .reveal')" "seen.jsonl" "the seen disclosure names the local ledger"
+rendered=$(run_dashboard) || fail "terminal view with an unreadable seen ledger should render"
+assert_contains "$rendered" "seen ledger unreadable" "the seen panel discloses that it could not be read"
 
 pass "fm-dashboard"
