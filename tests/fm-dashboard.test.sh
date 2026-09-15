@@ -382,7 +382,15 @@ watch_children=$(pgrep -P "$watch_pid" | tr '\n' ' ')
 kill -- -"$watch_pid" 2>/dev/null || true
 wait "$watch_pid" 2>/dev/null || true
 assert_not_equals "" "$watch_children" "a transient collection failure should not kill the watch loop"
-assert_equals "" "$(pgrep -P "$watch_pid" | tr '\n' ' ')" "the watch loop leaves no orphaned dashboard behind"
+watch_survivors=
+for watch_child in $watch_children; do
+  for _ in 1 2 3 4 5; do
+    kill -0 "$watch_child" 2>/dev/null || break
+    sleep 0.2
+  done
+  kill -0 "$watch_child" 2>/dev/null && watch_survivors="$watch_survivors $watch_child"
+done
+assert_equals "" "${watch_survivors# }" "the watch loop leaves no orphaned dashboard behind"
 assert_equals "true" \
   "$([ "$(grep -c 'retrying' "$TMP_ROOT/watch.err")" -ge 2 ] && printf 'true' || printf 'false')" \
   "each failed watch tick reports the failure and retries"
