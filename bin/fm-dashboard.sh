@@ -2,16 +2,23 @@
 # fm-dashboard.sh - render a local Firstmate dashboard for a Herdr-hosted pane.
 #
 # Usage:
-#   fm-dashboard.sh [--once] [--json] [--watch <seconds>] [--refresh-external]
+#   fm-dashboard.sh [--json] [--watch <seconds>] [--refresh-external|--force-refresh]
 #   fm-dashboard.sh --mark-seen <id> [--note <text>]
 #   fm-dashboard.sh --help
 #
+# The dashboard is terminal-first: it renders plain ANSI panels that work in any
+# terminal, including a Herdr pane, and needs no Herdr plugin or TUI API today.
+# A Herdr plugin launcher can come later without changing this projection.
+#
 # The dashboard reads this home's fleet state through fm-bearings-snapshot.sh and
-# fm-fleet-snapshot.sh, then renders terminal panels that work inside Herdr or any
-# other terminal.
+# fm-fleet-snapshot.sh, then renders those panels.
 # Microsoft 365 calendar and mail reads are optional and read-only: pass
 # --refresh-external to refresh private cache files under state/dashboard/ through
-# ~/.agents/skills/claude-connectors/query.py.
+# ~/.agents/skills/claude-connectors/query.py, which reuses a cached widget while it
+# is younger than the freshness window (default 300s, FM_DASHBOARD_CACHE_TTL), so a
+# --watch loop does not re-query the connector on every tick. --force-refresh
+# bypasses that window. A failed refresh keeps the last good answer and reports the
+# error alongside it.
 # Seen actions are local-only markers under state/dashboard/seen.jsonl.
 # The script never mutates backlog, task state, calendar, mail, GitHub, Linear, or
 # any Herdr session state.
@@ -27,10 +34,12 @@ BEARINGS_CMD="${FM_DASHBOARD_BEARINGS_CMD:-$SCRIPT_DIR/fm-bearings-snapshot.sh}"
 FLEET_CMD="${FM_DASHBOARD_FLEET_CMD:-$SCRIPT_DIR/fm-fleet-snapshot.sh}"
 M365_HELPER="${FM_DASHBOARD_M365_HELPER:-$HOME/.agents/skills/claude-connectors/query.py}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+CACHE_TTL_SECONDS="${FM_DASHBOARD_CACHE_TTL:-300}"
 
 FORMAT=terminal
 WATCH_SECONDS=
 REFRESH_EXTERNAL=0
+FORCE_REFRESH=0
 MARK_SEEN_ID=
 MARK_SEEN_NOTE=
 
@@ -52,24 +61,21 @@ today_utc() { date -u +%Y-%m-%d; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --once) FORMAT=terminal ;;
     --json) FORMAT=json ;;
     --watch)
       shift
       WATCH_SECONDS=${1:-}
       ;;
-    --watch=*) WATCH_SECONDS=${1#--watch=} ;;
     --refresh-external) REFRESH_EXTERNAL=1 ;;
+    --force-refresh) REFRESH_EXTERNAL=1; FORCE_REFRESH=1 ;;
     --mark-seen)
       shift
       MARK_SEEN_ID=${1:-}
       ;;
-    --mark-seen=*) MARK_SEEN_ID=${1#--mark-seen=} ;;
     --note)
       shift
       MARK_SEEN_NOTE=${1:-}
       ;;
-    --note=*) MARK_SEEN_NOTE=${1#--note=} ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -79,6 +85,10 @@ done
 case "$WATCH_SECONDS" in
   ''|*[!0-9]*) [ -z "$WATCH_SECONDS" ] || fail "--watch requires a positive integer" ;;
   0) fail "--watch requires a positive integer" ;;
+esac
+
+case "$CACHE_TTL_SECONDS" in
+  ''|*[!0-9]*) fail "FM_DASHBOARD_CACHE_TTL requires a non-negative integer" ;;
 esac
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
@@ -113,26 +123,53 @@ cache_file_or_placeholder() { # <path> <message>
   fi
 }
 
+utc_to_epoch() { # <timestamp>
+  case "$1" in
+    [0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;;
+    *) return 1 ;;
+  esac
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null \
+    || date -u -d "$1" +%s 2>/dev/null \
+    || return 1
+}
+
+cache_is_fresh() { # <path>
+  [ "$CACHE_TTL_SECONDS" -gt 0 ] || return 1
+  [ -s "$1" ] || return 1
+  local generated epoch now
+  generated=$(jq -r '.generated // ""' "$1" 2>/dev/null) || return 1
+  epoch=$(utc_to_epoch "$generated") || return 1
+  now=$(date -u +%s)
+  [ "$((now - epoch))" -lt "$CACHE_TTL_SECONDS" ]
+}
+
+cache_last_good_answer() { # <path>
+  [ -s "$1" ] || return 0
+  jq -r 'if (.ok == true) and ((.answer // "") != "") then .answer else "" end' "$1" 2>/dev/null
+}
+
 refresh_m365_cache() { # <kind> <prompt> <dest>
-  local kind=$1 prompt=$2 dest=$3 out rc tmp
+  local kind=$1 prompt=$2 dest=$3 out rc tmp last_good
   ensure_state
-  tmp=$(mktemp "$DASH_STATE/cache/.${kind}.XXXXXX") || fail "cannot create cache file"
-  if [ ! -f "$M365_HELPER" ]; then
-    jq -nc --arg generated "$(now_utc)" --arg message "M365 helper not found: $M365_HELPER" \
-      '{generated:$generated,ok:false,answer:null,message:$message}' > "$tmp" \
-      || { rm -f "$tmp"; fail "cannot write $kind cache"; }
-    mv "$tmp" "$dest" || fail "cannot publish $kind cache"
+  if [ "$FORCE_REFRESH" != 1 ] && cache_is_fresh "$dest"; then
     return 0
   fi
-  out=$("$PYTHON_BIN" "$M365_HELPER" m365 "$prompt" --max-turns 8 --timeout 120 2>&1)
-  rc=$?
+  tmp=$(mktemp "$DASH_STATE/cache/.${kind}.XXXXXX") || fail "cannot create cache file"
+  last_good=$(cache_last_good_answer "$dest")
+  if [ ! -f "$M365_HELPER" ]; then
+    out="M365 helper not found: $M365_HELPER"
+    rc=1
+  else
+    out=$("$PYTHON_BIN" "$M365_HELPER" m365 "$prompt" --max-turns 8 --timeout 120 2>&1)
+    rc=$?
+  fi
   if [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
     printf '%s' "$out" | jq -c --arg generated "$(now_utc)" \
       '{generated:$generated,ok:(.ok == true),answer:(.answer // ""),message:null}' > "$tmp" \
       || { rm -f "$tmp"; fail "cannot parse $kind connector output"; }
   else
-    jq -nc --arg generated "$(now_utc)" --arg message "$out" \
-      '{generated:$generated,ok:false,answer:null,message:$message}' > "$tmp" \
+    jq -nc --arg generated "$(now_utc)" --arg message "$out" --arg answer "$last_good" \
+      '{generated:$generated,ok:false,answer:(if $answer == "" then null else $answer end),message:$message}' > "$tmp" \
       || { rm -f "$tmp"; fail "cannot write $kind connector error"; }
   fi
   mv "$tmp" "$dest" || fail "cannot publish $kind cache"
@@ -191,10 +228,7 @@ gather_dashboard_json() {
     --arg today "$today" \
     --arg fm_home "$FM_HOME" \
     --arg herdr_env "${HERDR_ENV:-}" \
-    --arg herdr_session "${HERDR_SESSION:-}" \
-    --arg herdr_pane "${HERDR_PANE_ID:-}" \
-    --arg herdr_tab "${HERDR_TAB_ID:-}" \
-    --arg herdr_workspace "${HERDR_WORKSPACE_ID:-}" '
+    --arg herdr_session "${HERDR_SESSION:-}" '
       def arr($x): if ($x | type) == "array" then $x else [] end;
       def done_state: ((.state // "") | ascii_downcase) == "done";
       def completion_date: .completion.date // .done // .reported // .merged // null;
@@ -210,10 +244,7 @@ gather_dashboard_json() {
           today:$today,
           herdr:{
             detected:($herdr_env != ""),
-            session:(if $herdr_session != "" then $herdr_session else null end),
-            workspace_id:(if $herdr_workspace != "" then $herdr_workspace else null end),
-            tab_id:(if $herdr_tab != "" then $herdr_tab else null end),
-            pane_id:(if $herdr_pane != "" then $herdr_pane else null end)
+            session:(if $herdr_session != "" then $herdr_session else null end)
           },
           widgets:{
             calendar:($calendar[0] // {}),
@@ -245,6 +276,16 @@ panel() { # <title> <body>
   printf '└\n'
 }
 
+external_body() { # <json> <widget> <fallback>
+  printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" '
+    (.widgets[$widget] // {}) as $w
+    | ($w.answer // "") as $answer
+    | if $answer == "" then ($w.message // $fallback)
+      elif ($w.ok // false) then $answer
+      else $answer + "\n(stale: " + ($w.message // $fallback) + ")"
+      end'
+}
+
 render_dashboard() {
   local json=$1 header body
   header=$(printf '%s' "$json" | jq -r '
@@ -253,10 +294,10 @@ render_dashboard() {
   ')
   printf '%s\n' "$header"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.calendar | if .ok then (.answer // "") else (.message // "calendar unavailable") end')
+  body=$(external_body "$json" calendar 'calendar unavailable')
   panel 'Next calendar events' "$body"
 
-  body=$(printf '%s' "$json" | jq -r '.widgets.email | if .ok then (.answer // "") else (.message // "email unavailable") end')
+  body=$(external_body "$json" email 'email unavailable')
   panel 'Important emails' "$body"
 
   body=$(printf '%s' "$json" | jq -r '.widgets.working.items[]? | "- \(.name // .id) [\(.repo // "-")] - \(.state // "unknown"): \(.doing // "")"')

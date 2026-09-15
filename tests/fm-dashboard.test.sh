@@ -17,6 +17,8 @@ YESTERDAY=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d 'yesterday' +%Y-%m
 HOME_DIR="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$FAKEBIN"
+CALLS="$TMP_ROOT/m365-calls"
+: > "$CALLS"
 
 cat > "$TMP_ROOT/bearings.json" <<JSON
 {
@@ -62,6 +64,11 @@ SH
 chmod +x "$FAKEBIN/fleet"
 
 cat > "$FAKEBIN/m365" <<'SH'
+printf 'call\n' >> "$FM_DASHBOARD_TEST_CALLS"
+if [ -n "${FM_DASHBOARD_TEST_FAIL:-}" ]; then
+  printf 'connector refused\n'
+  exit 1
+fi
 case "${2:-}" in
   *calendar*) printf '{"ok":true,"answer":"- 09:00 Standup\\n- 13:00 Review","reads":[{"is_error":false}]}\n' ;;
   *emails*|*email*) printf '{"ok":true,"answer":"- Ada: Please review","reads":[{"is_error":false}]}\n' ;;
@@ -79,9 +86,12 @@ run_dashboard() {
     FM_DASHBOARD_M365_HELPER="$FAKEBIN/m365" \
     FM_DASHBOARD_TEST_BEARINGS="$TMP_ROOT/bearings.json" \
     FM_DASHBOARD_TEST_FLEET="$TMP_ROOT/fleet.json" \
+    FM_DASHBOARD_TEST_CALLS="$CALLS" \
     PYTHON_BIN=bash \
     "$DASHBOARD" "$@"
 }
+
+connector_calls() { [ -s "$CALLS" ] && wc -l < "$CALLS" | tr -d ' ' || printf '0'; }
 
 json=$(run_dashboard --json) || fail "dashboard JSON should render"
 assert_equals "fm-dashboard.v1" "$(printf '%s' "$json" | jq -r '.schema')" "schema is reported"
@@ -91,7 +101,7 @@ assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.done.items | length')
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.today.count')" "today summary filters completion date"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
 
-rendered=$(run_dashboard --once) || fail "dashboard terminal view should render"
+rendered=$(run_dashboard) || fail "dashboard terminal view should render"
 assert_contains "$rendered" "Next calendar events" "calendar panel rendered"
 assert_contains "$rendered" "Important emails" "email panel rendered"
 assert_contains "$rendered" "Build dashboard" "working task rendered"
@@ -108,5 +118,31 @@ assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "ca
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "calendar answer cached"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.email.answer')" "Please review" "email answer cached"
 assert_no_grep "reads" "$HOME_DIR/state/dashboard/cache/calendar.json" "cache does not persist connector evidence payload"
+assert_equals "2" "$(connector_calls)" "first external refresh queries both widgets once"
+
+# A repeated refresh inside the freshness window reuses the cache instead of
+# re-querying the connector, so a --watch tick cannot spin the connector.
+json=$(run_dashboard --json --refresh-external) || fail "cached external refresh should render"
+assert_equals "2" "$(connector_calls)" "refresh within freshness window reuses cache"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "cached calendar answer still served"
+
+json=$(run_dashboard --json --force-refresh) || fail "forced refresh should render"
+assert_equals "4" "$(connector_calls)" "force refresh bypasses the freshness window"
+
+export FM_DASHBOARD_CACHE_TTL=0
+json=$(run_dashboard --json --refresh-external) || fail "zero-ttl refresh should render"
+assert_equals "6" "$(connector_calls)" "zero freshness window always refreshes"
+unset FM_DASHBOARD_CACHE_TTL
+
+# A failed refresh keeps the last good answer and reports the error with it.
+export FM_DASHBOARD_TEST_FAIL=1
+json=$(run_dashboard --json --force-refresh) || fail "failed refresh should still render"
+assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "failed refresh marks widget not ok"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "failed refresh keeps last good answer"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector refused" "failed refresh records the error"
+unset FM_DASHBOARD_TEST_FAIL
+rendered=$(run_dashboard) || fail "terminal view should render after a failed refresh"
+assert_contains "$rendered" "Standup" "stale answer still rendered"
+assert_contains "$rendered" "stale:" "stale answer is marked stale"
 
 pass "fm-dashboard"
