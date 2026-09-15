@@ -172,11 +172,18 @@ assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets[] | objects | .omitt
 assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.working.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children bound only the working panel"
 
 # Today is fleet-scoped like Done actions, so a gap that hides landed rows must be
-# disclosed there too rather than letting the count read as the whole day.
+# disclosed there too rather than letting the count read as the whole day. Today
+# builds from the canonical snapshot, not the bearings landed array, so only bounds
+# that really drop rows from the snapshot reach it.
 for w in "done" "today"; do
-  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("landed showing"))] | length')" "landed truncation is disclosed on the $w panel"
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate home Done capped"))] | length')" "a snapshot-layer Done cap is disclosed on the $w panel"
   assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate registry unavailable"))] | length')" "unavailable registry is disclosed on the $w panel"
 done
+
+# "landed showing N of M" caps only the bearings landed array that Done actions
+# renders; it can drop no Today row, so it must not mark a complete day partial.
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("landed showing"))] | length')" "a bearings display cap is disclosed on the done panel"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.omitted[] | select(.surface | startswith("landed"))] | length')" "a bearings display cap does not mark the today panel short"
 
 # Parent activity evidence feeds no rendered panel, and an unstructured main row can
 # never have been dropped from the landed set, so neither may mark a full list short.

@@ -271,7 +271,8 @@ gather_dashboard_json() {
       | ($f[0] // {}) as $f0
       | (arr($b0.omitted)) as $omitted
       | def panels_bounded:
-          if startswith("landed") or startswith("secondmate home Done capped") then ["done","today"]
+          if startswith("secondmate home Done capped") then ["done","today"]
+          elif startswith("landed") then ["done"]
           elif startswith("in_flight") or startswith("main in-flight")
             or test("^secondmate .+ active children omitted") then ["working"]
           elif startswith("gates") then ["next"]
