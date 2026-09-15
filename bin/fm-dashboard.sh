@@ -368,7 +368,7 @@ gather_dashboard_json() {
 
 terminal_columns() {
   local cols=${COLUMNS:-}
-  [ -n "$cols" ] || cols=$(tput cols 2>/dev/null) || cols=
+  [ -n "$cols" ] || cols=$({ stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2)
   case "$cols" in
     ''|*[!0-9]*) cols=100 ;;
   esac
@@ -481,19 +481,15 @@ compact_body() { # <body> [limit]
     {
       line=trim($0)
       if (line == "") next
-      if (line ~ /^…/ || line ~ /^\(/) { notes[++note_count]=line; next }
       if (++seen > limit) { hidden++; next }
-      sub(/^[-*•][ \t]*/, "", line)
-      print "• " line
+      if (line ~ /^…/ || line ~ /^\(/) print line
+      else { sub(/^[-*•][ \t]*/, "", line); print "• " line }
     }
-    END {
-      if (hidden > 0) print "… " hidden " more"
-      for (i = 1; i <= note_count; i++) print notes[i]
-    }
+    END { if (hidden > 0) print "… " hidden " more" }
   '
 }
 
-external_body() { # <json> <widget> <fallback>
+external_body() { # <json> <widget> <fallback>; prints the age/staleness note, then the answer
   printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" --argjson ttl "$CACHE_TTL_SECONDS" '
     def age_label($seconds):
       if $seconds < 3600 then "\($seconds / 60 | floor)m"
@@ -503,14 +499,26 @@ external_body() { # <json> <widget> <fallback>
     (.widgets[$widget] // {}) as $w
     | ($w.answer // "") as $answer
     | ($w.answer_age_seconds // null) as $age
-    | if $answer == "" then ($w.message // $fallback)
-      elif ($w.ok // false) then
-        $answer
-        + (if $age != null and $age > $ttl then "\n(collected " + age_label($age) + " ago)" else "" end)
-      else $answer + "\n(stale"
-           + (if $age == null then "" else " for " + age_label($age) end)
-           + ": " + ($w.message // $fallback) + ")"
-      end'
+    | (if $answer == "" then ""
+       elif ($w.ok // false) then
+         (if $age != null and $age > $ttl then "(collected " + age_label($age) + " ago)" else "" end)
+       else "(stale"
+            + (if $age == null then "" else " for " + age_label($age) end)
+            + ": " + ($w.message // $fallback) + ")"
+       end) as $note
+    | $note + "\n" + (if $answer == "" then ($w.message // $fallback) else $answer end)'
+}
+
+external_panel_body() { # <json> <widget> <fallback>
+  local out note answer
+  out=$(external_body "$1" "$2" "$3")
+  note=${out%%$'\n'*}
+  answer=$(compact_body "${out#*$'\n'}")
+  if [ -n "$note" ]; then
+    printf '%s\n%s\n' "$answer" "$note"
+  else
+    printf '%s\n' "$answer"
+  fi
 }
 
 BOUNDED_NOTE_JQ='
@@ -536,8 +544,8 @@ render_dashboard() {
   ')
   printf '%s\n%s\n' "$header" "$stats"
 
-  calendar_body=$(compact_body "$(external_body "$json" calendar 'calendar unavailable')")
-  email_body=$(compact_body "$(external_body "$json" email 'email unavailable')")
+  calendar_body=$(external_panel_body "$json" calendar 'calendar unavailable')
+  email_body=$(external_panel_body "$json" email 'email unavailable')
 
   working_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
     (.widgets.working.items[]? | "● \(.name // .id) [\(.repo // "-")] \(.doing // .state // "unknown")"),
