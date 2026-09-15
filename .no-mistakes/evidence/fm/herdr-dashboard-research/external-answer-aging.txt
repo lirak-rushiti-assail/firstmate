@@ -1,0 +1,33 @@
+Real M365 calendar answers cached by --refresh-external; answer bodies redacted.
+
+1) Fresh successful answer (within the 300s freshness window): no age note.
+┌─ Next calendar events
+│ - <redacted: real M365 record 1>
+│ - <redacted: real M365 record 2>
+│ - <redacted: real M365 record 3>
+│ - <redacted: real M365 record 4>
+│ - <redacted: real M365 record 5>
+└
+
+2) Same successful answer backdated 3 days in the cache, plain run, no --refresh-external:
+┌─ Next calendar events
+│ - <redacted: real M365 record 1>
+│ - <redacted: real M365 record 2>
+│ - <redacted: real M365 record 3>
+│ - <redacted: real M365 record 4>
+│ - <redacted: real M365 record 5>
+│ (collected 3d ago)
+└
+
+3) Connector outage on --force-refresh: last good answer carried forward with its real age.
+┌─ Next calendar events
+│ - <redacted: real M365 record 1>
+│ - <redacted: real M365 record 2>
+│ - <redacted: real M365 record 3>
+│ - <redacted: real M365 record 4>
+│ - <redacted: real M365 record 5>
+│ (stale for 3d: M365 helper not found: /tmp/fm-dash-live/no-such-helper.py)
+└
+
+   cache record after the failed refresh (answer_generated is NOT bumped):
+{"generated":"2026-09-15T13:08:01Z","answer_generated":"2026-09-12T09:00:00Z","ok":false,"message":"M365 helper not found: /tmp/fm-dash-live/no-such-helper.py"}

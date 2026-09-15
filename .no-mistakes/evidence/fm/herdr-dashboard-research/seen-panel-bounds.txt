@@ -1,0 +1,25 @@
+Seen panel: local markers, most-recent-12 bound, and unreadable-ledger disclosure.
+
+$ fm-dashboard.sh --mark-seen landed-today   (then 13 more)
+┌─ Seen actions
+│ - 2026-09-15T13:08:11Z: review-13
+│ - 2026-09-15T13:08:11Z: review-12
+│ - 2026-09-15T13:08:11Z: review-11
+│ - 2026-09-15T13:08:11Z: review-10
+│ - 2026-09-15T13:08:11Z: review-9
+│ - 2026-09-15T13:08:11Z: review-8
+│ - 2026-09-15T13:08:11Z: review-7
+│ - 2026-09-15T13:08:11Z: review-6
+│ - 2026-09-15T13:08:11Z: review-5
+│ - 2026-09-15T13:08:11Z: review-4
+│ - 2026-09-15T13:08:11Z: review-3
+│ - 2026-09-15T13:08:11Z: review-2
+│ … seen showing 12 of 14 (reveal: inspect /tmp/fm-dash-live/home/state/dashboard/seen.jsonl)
+└
+
+Now truncate the final ledger line (the ENOSPC-style partial append):
+┌─ Seen actions
+│ … seen ledger unreadable (reveal: inspect /tmp/fm-dash-live/home/state/dashboard/seen.jsonl)
+└
+
+The panel no longer reads as an empty inbox; it names the ledger to inspect.

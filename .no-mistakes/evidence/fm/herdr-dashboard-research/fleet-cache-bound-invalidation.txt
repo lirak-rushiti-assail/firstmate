@@ -1,0 +1,49 @@
+Operator follows a panel's own reveal hint ("raise FM_SNAPSHOT_SECONDMATES")
+within the 5-minute fleet cache window. 3 secondmate homes registered.
+
+================ BEFORE the fix (c73b4ee) ================
+$ FM_SNAPSHOT_SECONDMATES=1 bin/fm-dashboard.sh
+Firstmate dashboard 2026-09-15T13:08:29Z · Herdr not detected
+┌─ Done actions
+│ - Landed today ((main))
+│ - Landed earlier ((main))
+│ … secondmate home(s) with unreadable structured state: 1 (reveal: inspect the listed secondmate home ledgers)
+│ … registered secondmates omitted by snapshot bound: 2 (reveal: raise FM_SNAPSHOT_SECONDMATES)
+└
+$ FM_SNAPSHOT_SECONDMATES=3 bin/fm-dashboard.sh      <-- operator raises the bound
+Firstmate dashboard 2026-09-15T13:08:30Z · fleet 0m old (cached) · Herdr not detected
+┌─ Done actions
+│ - Landed today ((main))
+│ - Landed earlier ((main))
+│ … secondmate home(s) with unreadable structured state: 1 (reveal: inspect the listed secondmate home ledgers)
+│ … registered secondmates omitted by snapshot bound: 2 (reveal: raise FM_SNAPSHOT_SECONDMATES)
+└
+   ^ cache replayed the snapshot collected under the OLD bound: the disclosure
+     still claims 2 secondmates are omitted and the knob appears broken.
+
+================ AFTER the fix (7c4875f) ================
+$ FM_SNAPSHOT_SECONDMATES=1 bin/fm-dashboard.sh
+Firstmate dashboard 2026-09-15T13:08:30Z · Herdr not detected
+┌─ Done actions
+│ - Landed today ((main))
+│ - Landed earlier ((main))
+│ … secondmate home(s) with unreadable structured state: 1 (reveal: inspect the listed secondmate home ledgers)
+│ … registered secondmates omitted by snapshot bound: 2 (reveal: raise FM_SNAPSHOT_SECONDMATES)
+└
+$ FM_SNAPSHOT_SECONDMATES=3 bin/fm-dashboard.sh      <-- operator raises the bound
+Firstmate dashboard 2026-09-15T13:08:30Z · Herdr not detected
+┌─ Done actions
+│ - Landed today ((main))
+│ - Landed earlier ((main))
+│ … secondmate home(s) with unreadable structured state: 3 (reveal: inspect the listed secondmate home ledgers)
+└
+   ^ bounds differ from the cached collection settings -> re-collected
+     (no "(cached)" in the header) and the omission disclosure is gone.
+$ FM_SNAPSHOT_SECONDMATES=3 bin/fm-dashboard.sh      <-- same bound, still inside the window
+Firstmate dashboard 2026-09-15T13:08:31Z · fleet 0m old (cached) · Herdr not detected
+   ^ settings match -> the accepted 5-minute cache reuse is preserved.
+
+persisted cache metadata:
+  fleet.json
+fleet.json.settings
+  fleet.json.settings contents: FM_SNAPSHOT_SECONDMATES=3

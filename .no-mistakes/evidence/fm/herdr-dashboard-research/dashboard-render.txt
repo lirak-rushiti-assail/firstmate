@@ -1,0 +1,46 @@
+Firstmate dashboard 2026-09-15T13:07:49Z · fleet 0m old (cached) · Herdr firstmate
+
+┌─ Next calendar events
+│ - <redacted: real M365 record 1>
+│ - <redacted: real M365 record 2>
+│ - <redacted: real M365 record 3>
+│ - <redacted: real M365 record 4>
+│ - <redacted: real M365 record 5>
+└
+
+┌─ Important emails
+│ Top 5 needing attention (last 7 days):
+│ 
+│ - <redacted: real M365 record 6>
+│ - <redacted: real M365 record 7>
+│ - <redacted: real M365 record 8>
+│ - <redacted: real M365 record 9>
+│ - <redacted: real M365 record 10>
+└
+
+┌─ Current working tasks
+│ … secondmate home(s) with unreadable structured state: 3 (reveal: inspect the listed secondmate home ledgers)
+│ … main in-flight backlog item(s) have no child metadata: 4 (reveal: inspect main data/backlog.md In flight vs state/*.meta)
+└
+
+┌─ Next tasks
+│ - Review the dashboard [(main)] - -
+│ - in-flight backlog item has no child metadata [(main)] - main inventory
+│ … secondmate home(s) with unreadable structured state: 3 (reveal: inspect the listed secondmate home ledgers)
+└
+
+┌─ Done actions
+│ - Landed today ((main))
+│ - Landed earlier ((main))
+│ … secondmate home(s) with unreadable structured state: 3 (reveal: inspect the listed secondmate home ledgers)
+└
+
+┌─ Seen actions
+│ - 2026-09-15T13:04:10Z: probe-1
+└
+
+┌─ Today summary
+│ 1 landed today.
+│ - Landed today [(main)] merged 2026-09-15
+│ … secondmate home(s) with unreadable structured state: 3 (reveal: inspect the listed secondmate home ledgers)
+└
