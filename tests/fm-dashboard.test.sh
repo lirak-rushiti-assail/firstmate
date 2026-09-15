@@ -372,16 +372,17 @@ fi
 assert_equals "" "$(cat "$TMP_ROOT/failed.json")" "a failed fleet collection emits no JSON document"
 
 # A watch loop must survive a transient collection failure and keep refreshing.
+set -m
 FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --watch 1 --force-refresh \
   >"$TMP_ROOT/watch.out" 2>"$TMP_ROOT/watch.err" &
 watch_pid=$!
+set +m
 sleep 3
-if ! kill -0 "$watch_pid" 2>/dev/null; then
-  wait "$watch_pid" 2>/dev/null || true
-  fail "a transient collection failure should not kill the watch loop"
-fi
-kill "$watch_pid" 2>/dev/null || true
+watch_children=$(pgrep -P "$watch_pid" | tr '\n' ' ')
+kill -- -"$watch_pid" 2>/dev/null || true
 wait "$watch_pid" 2>/dev/null || true
+assert_not_equals "" "$watch_children" "a transient collection failure should not kill the watch loop"
+assert_equals "" "$(pgrep -P "$watch_pid" | tr '\n' ' ')" "the watch loop leaves no orphaned dashboard behind"
 assert_equals "true" \
   "$([ "$(grep -c 'retrying' "$TMP_ROOT/watch.err")" -ge 2 ] && printf 'true' || printf 'false')" \
   "each failed watch tick reports the failure and retries"

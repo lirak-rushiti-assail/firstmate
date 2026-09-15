@@ -226,7 +226,7 @@ make_seen_json() { # <dest>
 }
 
 gather_dashboard_json() {
-  local tmpdir bearings fleet fleet_cache fleet_settings fleet_cached fleet_generated fleet_age calendar email seen out now today
+  local tmpdir bearings fleet fleet_cache fleet_settings fleet_cached fleet_generated fleet_age calendar email seen out now today cache_tmp
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard.XXXXXX") || fail "cannot create temp dir"
   bearings="$tmpdir/bearings.json"
   fleet="$tmpdir/fleet.json"
@@ -253,14 +253,18 @@ gather_dashboard_json() {
     FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_SNAPSHOT_NOW="$now" \
       "$FLEET_CMD" --json > "$fleet" \
       || { rm -rf "$tmpdir"; fail "cannot read fleet snapshot"; }
-    if ! { cp "$fleet" "$fleet_cache.tmp" && mv "$fleet_cache.tmp" "$fleet_cache"; }; then
-      rm -f "$fleet_cache.tmp"
+    cache_tmp=$(mktemp "$DASH_STATE/cache/.fleet.XXXXXX") \
+      || { rm -rf "$tmpdir"; fail "cannot create fleet cache temp file"; }
+    if ! { cp "$fleet" "$cache_tmp" && mv "$cache_tmp" "$fleet_cache"; }; then
+      rm -f "$cache_tmp"
       rm -rf "$tmpdir"
       fail "cannot publish fleet cache"
     fi
-    if ! { printf '%s\n' "$fleet_settings" > "$fleet_cache.settings.tmp" \
-      && mv "$fleet_cache.settings.tmp" "$fleet_cache.settings"; }; then
-      rm -f "$fleet_cache.settings.tmp"
+    cache_tmp=$(mktemp "$DASH_STATE/cache/.fleet-settings.XXXXXX") \
+      || { rm -rf "$tmpdir"; fail "cannot create fleet cache settings temp file"; }
+    if ! { printf '%s\n' "$fleet_settings" > "$cache_tmp" \
+      && mv "$cache_tmp" "$fleet_cache.settings"; }; then
+      rm -f "$cache_tmp"
       rm -rf "$tmpdir"
       fail "cannot publish fleet cache settings"
     fi
@@ -571,7 +575,8 @@ render_dashboard() {
     (.widgets.today.items[]? | "✓ \(.title // .id) [\(.owner // "-")] \(.completion.verb // "done") \(.artifact // "-")"),
     (.widgets.today | bounded_note)')
 
-  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-render.XXXXXX") || fail "cannot create render temp dir"
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-render.XXXXXX") \
+    || { printf 'fm-dashboard: cannot create render temp dir\n' >&2; return 1; }
   cols=$(terminal_columns)
   if [ "$cols" -ge 118 ]; then
     col_width=$(( (cols - 1) / 2 ))
