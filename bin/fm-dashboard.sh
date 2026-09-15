@@ -190,6 +190,7 @@ refresh_m365_cache() { # <kind> <prompt> <dest>
     out=$("$PYTHON_BIN" "$M365_HELPER" m365 "$prompt" --max-turns 8 --timeout 120 2>&1)
     rc=$?
   fi
+  [ -n "$out" ] || out="$kind connector failed (exit $rc) with no output"
   if [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
     printf '%s' "$out" | jq -c --arg generated "$(now_utc)" \
       '{generated:$generated,answer_generated:$generated,ok:(.ok == true),answer:(.answer // ""),message:null}' > "$tmp" \
@@ -586,7 +587,7 @@ render_dashboard() {
 
 run_once() {
   local json
-  json=$(gather_dashboard_json)
+  json=$(gather_dashboard_json) || return 1
   if [ "$FORMAT" = json ]; then
     printf '%s\n' "$json"
   else
@@ -602,7 +603,7 @@ fi
 if [ -n "$WATCH_SECONDS" ]; then
   while :; do
     printf '\033[H\033[2J'
-    run_once
+    run_once || exit 1
     sleep "$WATCH_SECONDS"
   done
 else

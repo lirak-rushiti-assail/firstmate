@@ -88,6 +88,7 @@ chmod +x "$FAKEBIN/bearings"
 cat > "$FAKEBIN/fleet" <<'SH'
 #!/usr/bin/env bash
 [ "${1:-}" = --json ] || exit 2
+[ -z "${FM_DASHBOARD_TEST_FLEET_FAIL:-}" ] || { echo "fleet: cannot read remote home ledger" >&2; exit 1; }
 printf 'collect\n' >> "$FM_DASHBOARD_TEST_COLLECTIONS"
 cat "$FM_DASHBOARD_TEST_FLEET"
 SH
@@ -95,6 +96,9 @@ chmod +x "$FAKEBIN/fleet"
 
 cat > "$FAKEBIN/m365" <<'SH'
 printf 'call\n' >> "$FM_DASHBOARD_TEST_CALLS"
+if [ -n "${FM_DASHBOARD_TEST_SILENT_FAIL:-}" ]; then
+  exit 137
+fi
 if [ -n "${FM_DASHBOARD_TEST_FAIL:-}" ]; then
   printf 'connector refused\n'
   exit 1
@@ -108,7 +112,8 @@ SH
 chmod +x "$FAKEBIN/m365"
 
 run_dashboard() {
-  FM_HOME="$HOME_DIR" \
+  COLUMNS=100 \
+    FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" \
     FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_DASHBOARD_BEARINGS_CMD="$FAKEBIN/bearings" \
@@ -343,5 +348,25 @@ assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.seen.omitted[] | sel
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable") | .reveal')" "seen.jsonl" "the seen disclosure names the local ledger"
 rendered=$(run_dashboard) || fail "terminal view with an unreadable seen ledger should render"
 assert_contains "$rendered" "seen ledger unreadable" "the seen panel discloses that it could not be read"
+
+# A connector that dies without writing anything must not read as an empty agenda.
+export FM_DASHBOARD_TEST_SILENT_FAIL=1
+json=$(run_dashboard --json --force-refresh --refresh-external) || fail "dashboard with a silent connector failure should render"
+assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "a silent connector failure is not a good answer"
+assert_not_equals "" "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "a silent connector failure still carries an error message"
+rendered=$(run_dashboard) || fail "terminal view after a silent connector failure should render"
+assert_contains "$rendered" "connector failed" "the calendar panel names the connector failure"
+unset FM_DASHBOARD_TEST_SILENT_FAIL
+
+# A failed fleet collection must stop rather than draw empty panels as fleet state.
+if FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --force-refresh >"$TMP_ROOT/failed.out" 2>"$TMP_ROOT/failed.err"; then
+  fail "a failed fleet collection should not exit 0"
+fi
+assert_not_contains "$(cat "$TMP_ROOT/failed.out")" "(none)" "a failed fleet collection draws no empty panels"
+assert_contains "$(cat "$TMP_ROOT/failed.err")" "fleet snapshot" "a failed fleet collection names the failure"
+if FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --json --force-refresh >"$TMP_ROOT/failed.json" 2>/dev/null; then
+  fail "a failed fleet collection should not exit 0 in JSON mode"
+fi
+assert_equals "" "$(cat "$TMP_ROOT/failed.json")" "a failed fleet collection emits no JSON document"
 
 pass "fm-dashboard"
