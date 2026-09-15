@@ -26,8 +26,9 @@
 # is younger than the freshness window (default 300s, FM_DASHBOARD_CACHE_TTL), so a
 # --watch loop does not re-query the connector on every tick. --force-refresh
 # bypasses that window. A failed refresh keeps the last good answer and reports the
-# error alongside it, with the age of that answer, so a connector outage never makes
-# a stale agenda read as current.
+# error alongside it, with the age of that answer. Any cached answer older than the
+# freshness window reports its age whether or not the last refresh succeeded, so a
+# plain run never presents a days-old agenda as current.
 # Seen actions are local-only markers under state/dashboard/seen.jsonl.
 # The script never mutates backlog, task state, calendar, mail, GitHub, Linear, or
 # any Herdr session state.
@@ -359,14 +360,21 @@ panel() { # <title> <body>
 }
 
 external_body() { # <json> <widget> <fallback>
-  printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" '
+  printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" --argjson ttl "$CACHE_TTL_SECONDS" '
+    def age_label($seconds):
+      if $seconds < 3600 then "\($seconds / 60 | floor)m"
+      elif $seconds < 86400 then "\($seconds / 3600 | floor)h"
+      else "\($seconds / 86400 | floor)d"
+      end;
     (.widgets[$widget] // {}) as $w
     | ($w.answer // "") as $answer
     | ($w.answer_age_seconds // null) as $age
     | if $answer == "" then ($w.message // $fallback)
-      elif ($w.ok // false) then $answer
+      elif ($w.ok // false) then
+        $answer
+        + (if $age != null and $age > $ttl then "\n(collected " + age_label($age) + " ago)" else "" end)
       else $answer + "\n(stale"
-           + (if $age == null then "" else " for \(($age / 60 | floor))m" end)
+           + (if $age == null then "" else " for " + age_label($age) end)
            + ": " + ($w.message // $fallback) + ")"
       end'
 }

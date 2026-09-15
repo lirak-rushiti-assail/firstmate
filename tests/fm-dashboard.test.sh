@@ -298,6 +298,28 @@ json=$(run_dashboard --json) || fail "zero-ttl fleet render should succeed"
 assert_equals "$((collected + 2))" "$(fleet_collections)" "zero freshness window always re-collects the fleet snapshot"
 unset FM_DASHBOARD_CACHE_TTL
 
+# A plain run serves the cached answer without re-querying, so a successful answer
+# that has aged past the freshness window must report how old it is rather than
+# reading as today's agenda.
+OLD_AT=$(date -u -v-3d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)
+jq -nc --arg at "$OLD_AT" \
+  '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup",message:null}' \
+  > "$HOME_DIR/state/dashboard/cache/calendar.json"
+json=$(run_dashboard --json) || fail "dashboard with an aged calendar cache should render"
+assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "an aged answer is still a good answer"
+assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer_age_seconds > 86400')" "an aged answer reports its age"
+rendered=$(run_dashboard) || fail "terminal view with an aged calendar cache should render"
+assert_contains "$rendered" "Standup" "an aged answer is still shown"
+assert_contains "$rendered" "collected 3d ago" "an aged answer names how old it is"
+
+# Inside the freshness window a good answer carries no age note.
+NOW_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+jq -nc --arg at "$NOW_AT" \
+  '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup",message:null}' \
+  > "$HOME_DIR/state/dashboard/cache/calendar.json"
+rendered=$(run_dashboard) || fail "terminal view with a fresh calendar cache should render"
+assert_not_contains "$rendered" "collected" "a fresh answer is not labelled old"
+
 # A seen ledger that cannot be parsed must not read as "nothing marked seen".
 printf 'not json at all\n' >> "$HOME_DIR/state/dashboard/seen.jsonl"
 json=$(run_dashboard --json) || fail "dashboard with an unreadable seen ledger should render"
