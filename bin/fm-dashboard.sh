@@ -27,11 +27,15 @@
 # All three columns are fleet-scoped: each unions this home's backlog rows with the
 # registered secondmate homes' own structured rows, so a task is visible as todo
 # before it shows up in progress and again once it lands. In Progress keeps every
-# live in-flight row, including held rows and programs that the bearings projection
-# routes to its own decision and gate sections. A secondmate home publishes one
-# captain-actionable inventory that mixes queued and held in-flight rows, so the
-# board splits it on the row's own state rather than reading all of it as todo, and
-# namespaces those rows as <home>/<id> so a row both projections carry is listed once.
+# live in-flight row that the snapshot publishes, including this home's held rows and
+# programs that the bearings projection routes to its own decision and gate sections,
+# and a secondmate home's in-flight rows whose child is parked, paused, or blocked.
+# A secondmate home publishes one captain-actionable inventory that mixes queued and
+# held in-flight rows, so the board splits it on the row's own state rather than
+# reading all of it as todo, and namespaces every secondmate row as <home>/<id> so a
+# row more than one published surface carries is listed once. A secondmate in-flight
+# row of kind program is the one live shape no home summary publishes, so the board
+# cannot show it.
 # The Todo column shows the newest FM_DASHBOARD_TODO queued rows by filing date
 # (default 10, undated last) and discloses the rest rather than printing the whole
 # backlog.
@@ -230,6 +234,15 @@ gather_dashboard_json() {
                    reason:(.blocked_reason // .hold_reason // null),
                    since:(.since // null),details:(.body_excerpt // null)}))
         | add // []) as $secondmate_inventory
+      | (structured_homes
+        | map(. as $m
+            | arr($m.holds)
+            | map(select(.source == "child-state")
+                | {id:($m.id + "/" + .id),title,kind,repo,owner:$m.id,
+                   state:(.state // "held"),
+                   doing:(.reason // .state // null),
+                   details:(.body_excerpt // null)}))
+        | add // []) as $secondmate_stalled
       | ((arr($f0.backlog.records)
         | map(select(.state == "queued" and .structured == true)
             | {id,title,kind,repo,owner:"(main)",reason:(.blocked_reason // null),
@@ -259,7 +272,13 @@ gather_dashboard_json() {
               | select(($in_flight_ids | index($r.id)) == null)
               | {id,title,kind,repo,state,
                  doing:(.reason // .state),
-                 owner,details}))) as $in_progress_today
+                 owner,details}))) as $carried
+      | ($carried | map(.id)) as $carried_ids
+      | ($carried
+        + ($secondmate_stalled
+          | map(. as $r
+              | select(($carried_ids | index($r.id)) == null)
+              | {id,title,kind,repo,state,doing,owner,details}))) as $in_progress_today
       | ((arr($f0.backlog.records)
           | map(select(landed_record and .completion.date == $today)
               | {id,title,kind,repo,completion,owner:"(main)",details:(.body_excerpt // null),

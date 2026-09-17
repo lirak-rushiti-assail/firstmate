@@ -83,6 +83,11 @@ cat > "$TMP_ROOT/fleet.json" <<JSON
          {"id":"mate-held-1","title":"Mate held in flight","state":"in_flight","repo":"materepo","kind":"ship","since":"$TODAY","hold_reason":"waiting on the mate captain","body_excerpt":"Mate held details stay saved but hidden."},
          {"id":"mate-live-1","title":"Mate live work","state":"in_flight","repo":"materepo","kind":"ship","since":"$TODAY","hold_reason":"captain hold"}
        ],
+       "holds":[
+         {"id":"mate-paused-1","title":"Mate paused work","state":"paused","source":"child-state","repo":"materepo","kind":"ship","reason":"paused mid-review","body_excerpt":"Mate paused details stay saved but hidden."},
+         {"id":"mate-live-1","title":"Mate live work","state":"working","source":"child-state","repo":"materepo","kind":"ship","reason":"already carried"},
+         {"id":"mate-todo-1","title":"Mate queued today","state":"queued","source":"backlog","repo":"materepo","kind":"ship","reason":"blocked by review"}
+       ],
        "omitted":[{"surface":"queued","count":6}]},
       {"id":"mate-z","home":"/homes/mate-z","provenance":{"selected":"parent-status"},
        "queued":[
@@ -141,7 +146,7 @@ assert_equals "fm-dashboard.v1" "$(printf '%s' "$json" | jq -r '.schema')" "sche
 assert_equals "1" "$(fleet_collections)" "one render collects the fleet snapshot once"
 
 assert_equals "2" "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items | length')" "today board lists queued tasks as todo"
-assert_equals "5" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items | length')" "today board lists active tasks as in progress"
+assert_equals "6" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items | length')" "today board lists active tasks as in progress"
 assert_equals "2" "$(printf '%s' "$json" | jq -r '.widgets.board.done.items | length')" "today board lists today's finished deliveries"
 # The board answers "my tasks" for the whole fleet in every column, so a
 # secondmate home's queued row is todo here before it shows up in progress.
@@ -158,6 +163,20 @@ assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.board.in_progress.it
 assert_equals "mate-a" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-live-1") | .owner')" "a secondmate active child is attributed to its home"
 assert_equals "(main)" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[] | select(.id == "ship-1") | .owner')" "this home's active task stays attributed to it"
 assert_equals "Mate in-progress details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-live-1") | .details')" "secondmate in-progress details stay persisted in JSON"
+# A mate's in-flight row whose child is parked, paused, or blocked with no backlog
+# hold reaches neither the home's active_children nor its queued inventory; only the
+# published holds array carries it, so skipping that array drops live work from the
+# board entirely with nothing disclosed.
+assert_equals "mate-a" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-paused-1") | .owner')" "a secondmate paused in-flight row is in progress under its home"
+assert_equals "paused" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-paused-1") | .state')" "a secondmate paused row keeps its child state"
+assert_equals "paused mid-review" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-paused-1") | .doing')" "a secondmate paused row says why it stalled"
+assert_equals "Mate paused details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-paused-1") | .details')" "secondmate paused details stay persisted in JSON"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.items[] | select(.id == "mate-a/mate-paused-1")] | length')" "a stalled in-flight row is not todo"
+# holds also restates rows the other surfaces already publish: a working child, and a
+# blocked queued row that belongs under Todo. Neither may be listed twice.
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-live-1")] | length')" "a working row restated in holds is still listed once"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.in_progress.items[] | select(.id == "mate-a/mate-todo-1")] | length')" "a blocked queued row stays out of in progress"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.items[] | select(.id == "mate-a/mate-todo-1")] | length')" "a blocked queued row is listed once under todo"
 # A home whose structured state was not selected is not a trustworthy source of
 # queued rows, so its rows stay out rather than being presented as fleet todo.
 assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.items[] | select(.id == "mate-z/mate-untrusted-1")] | length')" "an untrusted home contributes no todo rows"
@@ -216,7 +235,7 @@ assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.done.omitted[]
 assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board[] | .omitted[] | select(.surface | startswith("secondmates showing") or startswith("secondmate parent activity evidence") or (. == "task paths"))] | length')" "a bound on an unrendered section warns on no column"
 
 rendered=$(run_dashboard) || fail "dashboard terminal view should render"
-assert_contains "$rendered" "Todo 2 | In Progress 5 | Done 2" "terminal view starts with today board counts"
+assert_contains "$rendered" "Todo 2 | In Progress 6 | Done 2" "terminal view starts with today board counts"
 assert_contains "$rendered" "TODO" "todo section rendered"
 assert_contains "$rendered" "IN PROGRESS" "in-progress section rendered"
 assert_contains "$rendered" "DONE" "done section rendered"
@@ -281,7 +300,7 @@ collected=$(fleet_collections)
 json=$(run_dashboard --json) || fail "cached fleet render should succeed"
 assert_equals "$collected" "$(fleet_collections)" "render inside the freshness window reuses the collected snapshot"
 assert_equals "true" "$(printf '%s' "$json" | jq -r '.fleet.cached')" "a reused snapshot is reported as cached"
-assert_equals "5" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items | length')" "a cached snapshot still fills the columns"
+assert_equals "6" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items | length')" "a cached snapshot still fills the columns"
 rendered=$(run_dashboard) || fail "cached terminal view should render"
 assert_contains "$rendered" "old cached" "header discloses that the fleet snapshot came from cache"
 

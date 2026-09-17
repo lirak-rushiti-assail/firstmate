@@ -730,6 +730,39 @@ test_secondmate_and_child_bounds_are_disclosed() {
   pass "secondmate and per-home child counts are bounded, disclosed, and explicitly expandable"
 }
 
+test_secondmate_queued_bound_is_disclosed() {
+  local home fakebin mate json canonical i
+  home=$(make_home secondmate-queued-bound)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/queued-bound-a"
+  make_valid_secondmate_home a "$mate"
+  append_secondmate_registry "$home" a "$mate"
+  : > "$mate/data/backlog.md"
+  printf '## In flight\n\n## Queued\n' >> "$mate/data/backlog.md"
+  i=1
+  while [ "$i" -le 3 ]; do
+    printf -- '- [ ] queued-%s - Queued %s (repo: sample) (kind: ship) (since 2026-07-1%s)\n' \
+      "$i" "$i" "$i" >> "$mate/data/backlog.md"
+    i=$((i + 1))
+  done
+  printf '\n## Done\n' >> "$mate/data/backlog.md"
+  fakebin=$(make_fakebin "$home")
+  PATH="$fakebin:$PATH" FM_SNAPSHOT_SECONDMATE_QUEUED=2 refresh_local_secondmate_ledgers "$home"
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    (.secondmate_current.records[] | select(.id == "a")
+      | .counts.queued == 3 and (.queued | length) == 2
+        and (.omitted | any(.surface == "queued" and .count == 1)))
+  ' >/dev/null || fail "canonical per-home queued bound was not recorded: $canonical"
+  json=$(FM_SNAPSHOT_SECONDMATE_QUEUED=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    [.omitted[] | select(.surface | test("^secondmate a queued rows omitted by snapshot bound: 1$"))]
+    | length == 1 and (.[0].reveal | test("FM_SNAPSHOT_SECONDMATE_QUEUED"))
+  ' >/dev/null || fail "bearings did not disclose the per-home queued bound: $json"
+  pass "per-home queued bounds are disclosed with an expansion knob"
+}
+
 test_parent_decision_is_untrusted_contradiction_only() {
   local home mate fakebin canonical json
   home=$(make_home parent-decision-only)
@@ -3368,6 +3401,7 @@ test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work
 test_oversized_secondmate_summary_stays_strict_unknown
 test_secondmate_and_child_bounds_are_disclosed
+test_secondmate_queued_bound_is_disclosed
 test_parent_decision_is_untrusted_contradiction_only
 test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit

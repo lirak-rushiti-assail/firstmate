@@ -1045,6 +1045,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             blocked_by:((.unresolved_blocker_ids | join(",")) | if . == "" then null else trunc(120) end),
             blocked_by_ids:(.blocked_by_ids | map(trunc(120))),
             unresolved_blocker_ids:(.unresolved_blocker_ids | map(trunc(120))),
+            state:((.state // null) | if . == null then null else trunc(40) end),
             reason:((.hold_reason // .blocked_reason // "blocked") | trunc(120)),source:"backlog"} ]
        + [ $owned_in_flight[] as $work
            | $tasks[]
@@ -1052,6 +1053,10 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
            | select(($work.hold_reason != null and $work.hold_kind != null) | not)
            | {id,title:((.backlog.title // .id) | trunc(90)),blocked_by:null,
               blocked_by_ids:[],unresolved_blocker_ids:[],
+              state:(.current_state.state | trunc(40)),
+              repo:((($work.repo // .project // null)) | if . == null then null else trunc(120) end),
+              kind:((.backlog.kind // null) | if . == null then null else trunc(40) end),
+              body_excerpt:(($work.body_excerpt // null) | if . == null then null else trunc(240) end),
               reason:((.current_state.detail // .current_state.state) | trunc(120)),source:"child-state"} ]) as $holds_all
     | ($backlog.present == true
        and ($unstructured_current | length) == 0
