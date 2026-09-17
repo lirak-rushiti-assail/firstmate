@@ -28,7 +28,10 @@
 # registered secondmate homes' own structured rows, so a task is visible as todo
 # before it shows up in progress and again once it lands. In Progress keeps every
 # live in-flight row, including held rows and programs that the bearings projection
-# routes to its own decision and gate sections.
+# routes to its own decision and gate sections. A secondmate home publishes one
+# captain-actionable inventory that mixes queued and held in-flight rows, so the
+# board splits it on the row's own state rather than reading all of it as todo, and
+# namespaces those rows as <home>/<id> so a row both projections carry is listed once.
 # The Todo column shows the newest FM_DASHBOARD_TODO queued rows by filing date
 # (default 10, undated last) and discloses the rest rather than printing the whole
 # backlog.
@@ -188,6 +191,7 @@ gather_dashboard_json() {
           if startswith("secondmate home Done capped") then ["done"]
           elif startswith("in_flight") or startswith("main in-flight")
             or test("^secondmate .+ active children omitted") then ["in_progress"]
+          elif test("^secondmate .+ queued rows omitted") then ["todo","in_progress"]
           elif startswith("main unstructured current backlog") then ["todo","in_progress"]
           elif startswith("secondmate registry")
             or startswith("registered secondmates omitted")
@@ -196,8 +200,16 @@ gather_dashboard_json() {
           else [] end;
       def omitted_for($panel):
           [ $omitted[] | select((((.surface // "") | panels_bounded) | index($panel)) != null) ];
+      def structured_homes:
+          arr($f0.secondmate_current.records)
+          | map(select(.provenance.selected == "structured-home"));
       def task_detail($id):
-          ([arr($f0.tasks)[]? | select(.id == $id) | .backlog.body_excerpt // empty][0] // null);
+          ([arr($f0.tasks)[]? | select(.id == $id) | .backlog.body_excerpt // empty][0]
+           // [structured_homes[] as $m
+               | arr($m.active_children)[]
+               | select(($m.id + "/" + .id) == $id)
+               | .body_excerpt // empty][0]
+           // null);
       def task_state($id):
           ([arr($f0.tasks)[]? | select(.id == $id) | .current_state // empty][0] // null);
       def since_epoch:
@@ -210,26 +222,28 @@ gather_dashboard_json() {
           | sort_by((.value | since_epoch) as $epoch
               | if $epoch == null then [1, 0, .key] else [0, -$epoch, .key] end)
           | map(.value);
-      def structured_homes:
-          arr($f0.secondmate_current.records)
-          | map(select(.provenance.selected == "structured-home"));
-      ((arr($f0.backlog.records)
+      (structured_homes
+        | map(. as $m
+            | arr($m.queued)
+            | map({id:($m.id + "/" + .id),title,kind,repo,owner:$m.id,
+                   state:(.state // "queued"),
+                   reason:(.blocked_reason // .hold_reason // null),
+                   since:(.since // null),details:(.body_excerpt // null)}))
+        | add // []) as $secondmate_inventory
+      | ((arr($f0.backlog.records)
         | map(select(.state == "queued" and .structured == true)
             | {id,title,kind,repo,owner:"(main)",reason:(.blocked_reason // null),
                since:(.since // null),details:(.body_excerpt // null)}))
-       + (structured_homes
-          | map(. as $m
-              | arr($m.queued)
-              | map({id,title,kind,repo,owner:$m.id,
-                     reason:(.blocked_reason // .hold_reason // null),
-                     since:(.since // null),details:(.body_excerpt // null)}))
-          | add // [])
+       + ($secondmate_inventory
+          | map(select(.state != "in_flight") | del(.state)))
        | newest_since_first) as $todo_all
       | ($todo_all[:$todo_limit]) as $todo_today
       | (arr($b0.in_flight) | map(.id)) as $in_flight_ids
       | ((arr($b0.in_flight)
           | map({id,title:(.name // .id),kind,repo,state,doing:(.doing // .state // null),
-                 owner:(.owner // "(main)"),details:task_detail(.id)}))
+                 owner:((.id | split("/")) as $parts
+                        | if ($parts | length) > 1 then $parts[0] else "(main)" end),
+                 details:task_detail(.id)}))
         + (arr($f0.backlog.records)
           | map(select(.structured == true and .state == "in_flight")
               | . as $r
@@ -238,7 +252,14 @@ gather_dashboard_json() {
               | {id,title,kind,repo,
                  state:($t.state // .current_role // "held"),
                  doing:(.hold_reason // $t.detail // .current_role // null),
-                 owner:"(main)",details:(.body_excerpt // null)}))) as $in_progress_today
+                 owner:"(main)",details:(.body_excerpt // null)}))
+        + ($secondmate_inventory
+          | map(. as $r
+              | select($r.state == "in_flight")
+              | select(($in_flight_ids | index($r.id)) == null)
+              | {id,title,kind,repo,state,
+                 doing:(.reason // .state),
+                 owner,details}))) as $in_progress_today
       | ((arr($f0.backlog.records)
           | map(select(landed_record and .completion.date == $today)
               | {id,title,kind,repo,completion,owner:"(main)",details:(.body_excerpt // null),

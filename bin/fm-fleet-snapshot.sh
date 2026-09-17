@@ -1034,6 +1034,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             repo:(($work.repo // .project // null) | if . == null then null else trunc(120) end),
             name:(($work.title // null) | if . == null then null else trunc(70) end),
             source:.current_state.source,
+            body_excerpt:(($work.body_excerpt // null) | if . == null then null else trunc(240) end),
             doing:((.current_state.detail // "") | trunc(120))} ]) as $active_all
     | ($captain_holds_all
        + ([ $tasks[] as $t | ($t.hints.open_decisions // [])[]
@@ -1088,6 +1089,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
         decisions_open:$decisions_all[:$decisions_n],
         holds:$holds_all[:$queued_n],
         queued:([$queued_all[] | {id:(.id | trunc(120)),title:(.title | trunc(120)),
+          state:((.state // null) | if . == null then null else trunc(40) end),
           blocked_by:((.blocked_by // null) | if . == null then null else trunc(120) end),
           blocked_by_ids:((.blocked_by_ids // []) | map(trunc(120))),
           unresolved_blocker_ids:((.unresolved_blocker_ids // []) | map(trunc(120))),
