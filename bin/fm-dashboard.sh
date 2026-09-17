@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# fm-dashboard.sh - render a local Firstmate dashboard for a Herdr-hosted pane.
+# fm-dashboard.sh - render a local Firstmate today board for a Herdr-hosted pane.
 #
 # Usage:
 #   fm-dashboard.sh [--json] [--watch <seconds>] [--refresh-external|--force-refresh]
 #   fm-dashboard.sh --mark-seen <id>
 #   fm-dashboard.sh --help
 #
-# The dashboard is terminal-first: it renders plain ANSI panels that work in any
-# terminal, including a Herdr pane, and needs no Herdr plugin or TUI API today.
+# The dashboard is terminal-first: it renders plain ANSI Todo, In Progress, and
+# Done panels that work in any terminal, including a Herdr pane, and needs no Herdr
+# plugin or TUI API today.
 # A Herdr plugin launcher can come later without changing this projection.
 #
 # The dashboard collects the canonical fm-fleet-snapshot.sh document once per
-# refresh and projects it twice: directly for the today summary, and through
-# fm-bearings-snapshot.sh (FM_BEARINGS_SNAPSHOT_JSON) for the underway, gate, and
-# landed panels, so every panel describes the same instant and one refresh costs one
-# remote-ledger collection. That collection is itself reused from
+# refresh and projects it twice: directly for today's Todo and Done board columns,
+# and through fm-bearings-snapshot.sh (FM_BEARINGS_SNAPSHOT_JSON) for the active
+# In Progress column, so every column describes the same instant and one refresh
+# costs one remote-ledger collection. That collection is itself reused from
 # state/dashboard/cache/fleet.json while it is younger than the freshness window, so
 # a --watch tick redraws from the cached snapshot instead of re-reading every remote
 # home; the header reports the snapshot's age whenever a panel is drawn from cache.
@@ -23,19 +24,21 @@
 # snapshot collected under the old bound.
 # Collecting a fresh snapshot lets fm-fleet-snapshot.sh refresh its parent-side
 # remote-ledger cache, which is the only fleet state any dashboard run writes.
-# Microsoft 365 calendar and mail reads are optional and read-only: pass
-# --refresh-external to refresh private cache files under state/dashboard/ through
-# ~/.agents/skills/claude-connectors/query.py, which reuses a cached widget while it
-# is younger than the freshness window (default 300s, FM_DASHBOARD_CACHE_TTL), so a
-# --watch loop does not re-query the connector on every tick. --force-refresh
-# bypasses that window. A failed refresh keeps the last good answer and reports the
-# error alongside it, with the age of that answer. Any cached answer older than the
-# freshness window reports its age whether or not the last refresh succeeded, so a
-# plain run never presents a days-old agenda as current.
-# Seen actions are local-only markers under state/dashboard/seen.jsonl.
+# Microsoft 365 calendar and mail reads are optional and read-only cache refreshes:
+# pass --refresh-external to refresh private cache files under state/dashboard/
+# through ~/.agents/skills/claude-connectors/query.py. The terminal board no longer
+# renders those widgets, but JSON keeps them for callers that still inspect the
+# cached data. The cache is reused while younger than the freshness window (default
+# 300s, FM_DASHBOARD_CACHE_TTL), and --force-refresh bypasses that window. A failed
+# refresh keeps the last good answer and reports the error alongside it, with the
+# age of that answer.
+# Seen actions are local-only markers under state/dashboard/seen.jsonl and remain in
+# JSON, but the terminal board does not render them.
+# Saved task details come from backlog body text and stay in JSON; the terminal
+# board intentionally hides them.
 # The script never mutates backlog, task state, calendar, mail, GitHub, Linear, or
 # any Herdr session state.
-# Panels disclose what the snapshot could not fully read: a bounded or partial
+# Columns disclose what the snapshot could not fully read: a bounded or partial
 # section prints a concise trailing line naming the gap and how to reveal it.
 set -u
 
@@ -330,12 +333,23 @@ gather_dashboard_json() {
                  end)};
       def omitted_for($panel):
           [ $omitted[] | select((((.surface // "") | panels_bounded) | index($panel)) != null) ];
-      ((arr($f0.backlog.records)
+      def task_detail($id):
+          ([arr($f0.tasks)[]? | select(.id == $id) | .backlog.body_excerpt // empty][0] // null);
+      (arr($f0.backlog.records)
+        | map(select(.state == "queued" and .structured == true)
+            | {id,title,kind,repo,owner:"(main)",reason:(.blocked_reason // null),
+               since:(.since // null),details:(.body_excerpt // null)})) as $todo_today
+      | (arr($b0.in_flight)
+        | map({id,title:(.name // .id),kind,repo,state,doing:(.doing // .state // null),
+               owner:(.owner // "(main)"),details:task_detail(.id)})) as $in_progress_today
+      | ((arr($f0.backlog.records)
           | map(select(landed_record and .completion.date == $today)
-              | {id,title,kind,completion,owner:"(main)",artifact:(landed_artifact // "-")}))
+              | {id,title,kind,repo,completion,owner:"(main)",details:(.body_excerpt // null),
+                 artifact:(landed_artifact // "-")}))
         + (arr($f0.secondmate_landed.records)
           | map(select(.completion.date == $today)
-              | {id,title,kind,completion,owner:(.home_id // "-"),artifact:(landed_artifact // "-")}))) as $done_today
+              | {id,title,kind,completion,owner:(.home_id // "-"),details:(.body_excerpt // null),
+                 artifact:(landed_artifact // "-")}))) as $done_today
       | {
           schema:"fm-dashboard.v1",
           generated:$generated,
@@ -368,6 +382,11 @@ gather_dashboard_json() {
               count:($done_today | length),
               omitted:omitted_for("today"),
               summary:(if ($done_today | length) == 0 then "Nothing landed today." else "\(($done_today | length)) landed today." end)
+            },
+            board:{
+              todo:{items:$todo_today,omitted:omitted_for("next")},
+              in_progress:{items:$in_progress_today,omitted:omitted_for("working")},
+              done:{items:$done_today,omitted:omitted_for("today")}
             }
           }
         }
@@ -387,216 +406,55 @@ terminal_columns() {
   printf '%s\n' "$cols"
 }
 
-display_width() { # <text>; sets DW to the text's width in terminal cells
-  local stripped=${1//[$'\x80'-$'\xbf']/}
-  DW=${#stripped}
-}
-
-repeat_char() { # <char> <count>
-  local out='' n=$2
-  while [ "$n" -gt 0 ]; do
-    out="$out$1"
-    n=$((n - 1))
-  done
-  printf '%s' "$out"
-}
-
-cut_cells() { # <text> <cells>; sets CUT to the longest prefix fitting in <cells>
-  local text=$1 cells=$2 chunk=${1:0:$2}
-  display_width "$chunk"
-  while [ -n "$chunk" ] && [ "$DW" -gt "$cells" ]; do
-    chunk=${chunk%?}
-    display_width "$chunk"
-  done
-  while [ -n "$chunk" ]; do
-    case ${text:${#chunk}:1} in
-      [$'\x80'-$'\xbf']) chunk=${chunk%?} ;;
-      *) break ;;
-    esac
-  done
-  CUT=$chunk
-}
-
-wrap_line() { # <text> <cells>; prints the text wrapped to <cells> per line
-  local text=$1 cells=$2 head
-  display_width "$text"
-  while [ "$DW" -gt "$cells" ]; do
-    cut_cells "$text" "$cells"
-    [ -n "$CUT" ] || break
-    head=${CUT% *}
-    if [ "$head" = "$CUT" ] || [ -z "$head" ]; then
-      head=$CUT
-      text=${text:${#head}}
-    else
-      text=${text:$(( ${#head} + 1 ))}
-    fi
-    printf '%s\n' "$head"
-    display_width "$text"
-  done
-  printf '%s\n' "$text"
-}
-
-panel_box_file() { # <title> <body> <file> <width>
-  local title=$1 body=${2:-} file=$3 width=$4 inner content label line wrapped count=0
-  [ "$width" -lt 24 ] && width=24
-  inner=$((width - 2))
-  content=$((width - 4))
-  cut_cells " $title " "$inner"
-  label=$CUT
-  display_width "$label"
-  {
-    printf '╭%s%s╮\n' "$label" "$(repeat_char '─' $((inner - DW)))"
-    while IFS= read -r line; do
-      line=${line%$'\r'}
-      [ -n "$line" ] || continue
-      while IFS= read -r wrapped; do
-        display_width "$wrapped"
-        printf '│ %s%*s │\n' "$wrapped" "$((content - DW))" ''
-        count=$((count + 1))
-      done < <(wrap_line "$line" "$content")
-    done <<<"$body"
-    if [ "$count" -eq 0 ]; then
-      printf '│ %s%*s │\n' '(none)' "$((content - 6))" ''
-    fi
-    printf '╰%s╯\n' "$(repeat_char '─' "$inner")"
-  } > "$file"
-}
-
-render_panel_pair() { # <tmpdir> <terminal-columns> <left-title> <left-body> <right-title> <right-body>
-  local tmpdir=$1 cols=$2 left_title=$3 left_body=$4 right_title=$5 right_body=$6 left right left_lines right_lines width=0
-  left="$tmpdir/left.$$.panel"
-  right="$tmpdir/right.$$.panel"
-  [ "$cols" -ge 118 ] && width=$(( (cols - 1) / 2 ))
-  if [ "$width" -gt 0 ]; then
-    panel_box_file "$left_title" "$left_body" "$left" "$width"
-    panel_box_file "$right_title" "$right_body" "$right" "$width"
-    left_lines=$(( $(wc -l < "$left") ))
-    right_lines=$(( $(wc -l < "$right") ))
-    while [ "$left_lines" -lt "$right_lines" ]; do
-      printf '%*s\n' "$width" '' >> "$left"
-      left_lines=$((left_lines + 1))
-    done
-    paste -d ' ' "$left" "$right"
-  else
-    panel_box_file "$left_title" "$left_body" "$left" "$cols"
-    panel_box_file "$right_title" "$right_body" "$right" "$cols"
-    cat "$left"
-    cat "$right"
-  fi
-}
-
-compact_body() { # <body> [limit]
-  local body=${1:-} limit=${2:-5}
-  printf '%s\n' "$body" | awk -v limit="$limit" '
-    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-    {
-      line=trim($0)
-      if (line == "") next
-      if (++seen > limit) { hidden++; next }
-      if (line ~ /^…/ || line ~ /^\(/) print line
-      else { sub(/^[-*•][ \t]*/, "", line); print "• " line }
-    }
-    END { if (hidden > 0) print "… " hidden " more" }
+clip_ascii_lines() { # <width>
+  local width=$1
+  awk -v width="$width" '
+    length($0) > width { print substr($0, 1, width - 3) "..."; next }
+    { print }
   '
 }
 
-external_body() { # <json> <widget> <fallback>; prints the age/staleness note, then the answer
-  printf '%s' "$1" | jq -r --arg widget "$2" --arg fallback "$3" --argjson ttl "$CACHE_TTL_SECONDS" \
-    --arg cache "$DASH_STATE/cache/$2.json" '
-    def age_label($seconds):
-      if $seconds < 3600 then "\($seconds / 60 | floor)m"
-      elif $seconds < 86400 then "\($seconds / 3600 | floor)h"
-      else "\($seconds / 86400 | floor)d"
-      end;
-    def one_line: gsub("[\\n\\r\\t]+"; " ") | gsub("  +"; " ");
-    def clamp($n):
-      if (length > $n)
-      then (.[:$n] | sub(" +$"; "")) + "… (reveal: inspect " + $cache + ")"
-      else . end;
-    (.widgets[$widget] // {}) as $w
-    | ($w.answer // "") as $answer
-    | ($w.answer_age_seconds // null) as $age
-    | (($w.message // $fallback) | one_line | clamp(80)) as $message
-    | (if $answer == "" then ""
-       elif ($w.ok // false) then
-         (if $age != null and $age > $ttl then "(collected " + age_label($age) + " ago)" else "" end)
-       else "(stale"
-            + (if $age == null then "" else " for " + age_label($age) end)
-            + ": " + $message + ")"
-       end) as $note
-    | $note + "\n" + (if $answer == "" then $message else $answer end)'
-}
-
-external_panel_body() { # <json> <widget> <fallback>
-  local out note answer
-  out=$(external_body "$1" "$2" "$3")
-  note=${out%%$'\n'*}
-  answer=$(compact_body "${out#*$'\n'}")
-  if [ -n "$note" ]; then
-    printf '%s\n%s\n' "$answer" "$note"
-  else
-    printf '%s\n' "$answer"
-  fi
-}
-
-BOUNDED_NOTE_JQ='
-  def bounded_note:
-    (.omitted // [])[]
-    | "\u2026 " + (.surface // "bounded") + " (reveal: " + (.reveal // "-") + ")";
-'
-
 render_dashboard() {
-  local json=$1 header stats calendar_body email_body working_body next_body done_body seen_body today_body
-  local tmpdir cols
+  local json=$1 header stats cols rule_width rule
+  cols=$(terminal_columns)
+  rule_width=$((cols - 1))
+  rule=$(printf '%*s' "$rule_width" '' | tr ' ' '-')
   header=$(printf '%s' "$json" | jq -r '
-    "Firstmate dashboard " + .generated +
+    "Firstmate today board " + .generated +
     (.fleet as $f
-     | if ($f.cached // false) then " \u00b7 fleet \((($f.age_seconds // 0) / 60 | floor))m old (cached)" else "" end) +
-    (if .herdr.detected then " · Herdr " + (.herdr.session // "session") else " · Herdr not detected" end)
+     | if ($f.cached // false) then " | fleet \((($f.age_seconds // 0) / 60 | floor))m old cached" else "" end) +
+    (if .herdr.detected then " | Herdr " + (.herdr.session // "session") else " | Herdr not detected" end)
   ')
   stats=$(printf '%s' "$json" | jq -r '
-    "Work \((.widgets.working.items // []) | length)" +
-    "  ·  Next \((.widgets.next.items // []) | length)" +
-    "  ·  Done today \(.widgets.today.count // 0)" +
-    "  ·  Seen " + (if .widgets.seen.readable == false then "?"
-                    else "\(.widgets.seen.count // ((.widgets.seen.items // []) | length))" end)
+    "Todo \((.widgets.board.todo.items // []) | length)" +
+    " | In Progress \((.widgets.board.in_progress.items // []) | length)" +
+    " | Done \((.widgets.board.done.items // []) | length)"
   ')
-  printf '%s\n%s\n' "$header" "$stats"
-
-  calendar_body=$(external_panel_body "$json" calendar 'calendar unavailable')
-  email_body=$(external_panel_body "$json" email 'email unavailable')
-
-  working_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.working.items[]? | "● \(.name // .id) [\(.repo // "-")] \(.doing // .state // "unknown")"),
-    (.widgets.working | bounded_note)')
-
-  next_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.next.items[]? | "◇ \(.title // .id) [\(.owner // "-")] \(.reason // "-")"),
-    (.widgets.next | bounded_note)')
-
-  done_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.done.items[]? | "✓ \(.what // .id) (\(.owner // "-"))"),
-    (.widgets.done | bounded_note)')
-
-  seen_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    (.widgets.seen.items[]? | "◉ \(.at): \(.id)"),
-    (.widgets.seen | bounded_note)')
-
-  today_body=$(printf '%s' "$json" | jq -r "$BOUNDED_NOTE_JQ"'
-    "◷ " + .widgets.today.summary,
-    (.widgets.today.items[]? | "✓ \(.title // .id) [\(.owner // "-")] \(.completion.verb // "done") \(.artifact // "-")"),
-    (.widgets.today | bounded_note)')
-
-  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/fm-dashboard-render.XXXXXX") \
-    || { printf 'fm-dashboard: cannot create render temp dir\n' >&2; return 1; }
-  cols=$(terminal_columns)
-
-  render_panel_pair "$tmpdir" "$cols" 'Next calendar events' "$calendar_body" 'Important emails' "$email_body"
-  render_panel_pair "$tmpdir" "$cols" 'Current working tasks' "$working_body" 'Next tasks' "$next_body"
-  render_panel_pair "$tmpdir" "$cols" 'Done actions' "$done_body" 'Seen actions' "$seen_body"
-  panel_box_file 'Today summary' "$today_body" "$tmpdir/today.panel" "$cols"
-  cat "$tmpdir/today.panel"
-  rm -rf "$tmpdir"
+  {
+    printf '%s
+%s
+%s
+' "$header" "$stats" "$rule"
+    printf '%s' "$json" | jq -r '
+      def owner($x):
+        ($x.repo // $x.owner // "") as $owner
+        | if $owner == "" then "" else " [" + ($owner | tostring) + "]" end;
+      def line($mark; $x):
+        "  " + $mark + " " + (($x.title // $x.name // $x.id) | tostring) + owner($x);
+      def note($w):
+        ($w.omitted // [])[]? | "  ! " + (.surface // "bounded") + " (reveal: " + (.reveal // "-") + ")";
+      def section($name; $mark; $w):
+        $name,
+        (($name | gsub("."; "-"))),
+        (if (($w.items // []) | length) == 0 then "  - none"
+         else ($w.items[] | line($mark; .)) end),
+        note($w),
+        "";
+      section("TODO"; "[ ]"; .widgets.board.todo),
+      section("IN PROGRESS"; "[>]"; .widgets.board.in_progress),
+      section("DONE"; "[x]"; .widgets.board.done)
+    '
+  } | clip_ascii_lines "$rule_width"
 }
 
 run_once() {

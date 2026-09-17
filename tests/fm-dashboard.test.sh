@@ -60,11 +60,15 @@ cat > "$TMP_ROOT/fleet.json" <<JSON
   "generated": "$NOW",
   "backlog": {
     "records": [
-      {"state":"done","structured":true,"id":"today-1","title":"Finished today","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/1"},
+      {"state":"queued","structured":true,"id":"todo-1","title":"Todo today","repo":"firstmate","kind":"ship","body_excerpt":"Todo details stay saved but hidden."},
+      {"state":"done","structured":true,"id":"today-1","title":"Finished today","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/1","body_excerpt":"Done details stay saved but hidden."},
       {"state":"done","structured":true,"id":"old-1","title":"Finished earlier","repo":"firstmate","kind":"ship","completion":{"verb":"merged","date":"$YESTERDAY"},"pr_url":"https://example.invalid/pr/2"},
       {"state":"done","structured":true,"id":"cap-1","title":"Decide the rollout","repo":"firstmate","kind":"captain","completion":{"verb":"done","date":"$TODAY"},"local_note":"decided"}
     ]
   },
+  "tasks": [
+    {"id":"ship-1","backlog":{"body_excerpt":"In-progress details stay saved but hidden."}}
+  ],
   "secondmate_landed": {
     "records": [
       {"id":"mate-today-1","title":"Mate landed today","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/9","home":"/homes/mate-a","home_id":"mate-a"},
@@ -204,21 +208,29 @@ for w in "working" "next"; do
 done
 assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.next.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children do not bound the next panel"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items | length')" "today board lists queued tasks as todo"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items | length')" "today board lists active tasks as in progress"
+assert_equals "2" "$(printf '%s' "$json" | jq -r '.widgets.board.done.items | length')" "today board lists today's finished deliveries"
+assert_equals "Todo details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items[0].details')" "todo details stay persisted in JSON"
+assert_equals "In-progress details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[0].details')" "in-progress details stay persisted in JSON"
+assert_equals "Done details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.done.items[] | select(.id == "today-1") | .details')" "done details stay persisted in JSON"
 
 rendered=$(run_dashboard) || fail "dashboard terminal view should render"
-assert_contains "$rendered" "Work 1  ·  Next 1  ·  Done today 2  ·  Seen 0" "terminal view starts with compact dashboard counts"
-assert_contains "$rendered" "╭ Next calendar events" "calendar panel uses a dashboard box"
-assert_contains "$rendered" "Next calendar events" "calendar panel rendered"
-assert_contains "$rendered" "Important emails" "email panel rendered"
-assert_contains "$rendered" "● Build dashboard" "working task rendered as a compact status row"
-assert_contains "$rendered" "Finished today" "today summary rendered"
-assert_contains "$rendered" "landed showing 1 of 14" "done panel discloses its truncation"
-assert_contains "$rendered" "--all-landed" "done panel names how to reveal the rest"
+assert_contains "$rendered" "Todo 1 | In Progress 1 | Done 2" "terminal view starts with today board counts"
+assert_contains "$rendered" "TODO" "todo section rendered"
+assert_contains "$rendered" "IN PROGRESS" "in-progress section rendered"
+assert_contains "$rendered" "DONE" "done section rendered"
+assert_contains "$rendered" "[ ] Todo today [firstmate]" "todo task rendered"
+assert_contains "$rendered" "[>] Build dashboard [firstmate]" "active task rendered"
+assert_contains "$rendered" "[x] Finished today [firstmate]" "done task rendered"
+assert_contains "$rendered" "[x] Mate landed today [mate-a]" "secondmate done task rendered"
 assert_contains "$rendered" "in_flight showing 1 of 30" "working panel discloses its truncation"
-assert_contains "$rendered" "gates showing 1 of 25" "next panel discloses its truncation"
-assert_contains "$rendered" "secondmate registry unavailable: read failed" "partial fleet data is visible in the panels it bounds"
-assert_contains "$rendered" "Next task [mate-a]" "next panel names the home that owns the gate"
-assert_contains "$rendered" "awaiting review" "next panel renders the gate reason"
+assert_contains "$rendered" "secondmate registry unavailable: read failed" "partial fleet data is visible in the sections it bounds"
+assert_not_contains "$rendered" "Next calendar events" "calendar widget stays out of terminal board"
+assert_not_contains "$rendered" "Important emails" "email widget stays out of terminal board"
+assert_not_contains "$rendered" "╭" "terminal board uses no box drawing"
+assert_not_contains "$rendered" "●" "terminal board uses ascii markers"
+assert_not_contains "$rendered" "Todo details stay saved" "terminal board hides saved details"
 assert_not_contains "$rendered" "task paths" "unrelated omitted surfaces are not rendered as panel truncation"
 
 seen_out=$(run_dashboard --mark-seen email-123) || fail "mark seen should succeed"
@@ -239,7 +251,7 @@ assert_equals "seen showing 12 of 14" "$(printf '%s' "$json" | jq -r '.widgets.s
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[0].reveal')" "seen.jsonl" "seen disclosure names the local ledger"
 assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.seen.items[] | select(.id == "email-123")] | length')" "the oldest markers are the ones dropped"
 rendered=$(run_dashboard) || fail "terminal view with a bounded seen ledger should render"
-assert_contains "$rendered" "seen showing 12 of 14" "seen panel renders its truncation note"
+assert_not_contains "$rendered" "seen showing 12 of 14" "seen ledger stays out of terminal board"
 
 json=$(run_dashboard --json --refresh-external) || fail "external refresh should render"
 assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "calendar cache refreshed"
@@ -283,11 +295,11 @@ assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Sta
 assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer_generated == .widgets.calendar.generated')" "a failed refresh does not restamp the answer as freshly collected"
 assert_equals "true" "$(printf '%s' "$json" | jq -r '(.widgets.calendar.answer_age_seconds // -1) >= 0')" "a carried-forward answer reports its age"
 rendered=$(run_dashboard) || fail "terminal view during an outage should render"
-assert_contains "$rendered" "stale for " "the stale answer names how old it is"
+assert_not_contains "$rendered" "stale for " "external widget outage stays out of terminal board"
 unset FM_DASHBOARD_TEST_FAIL
 rendered=$(run_dashboard) || fail "terminal view should render after a failed refresh"
-assert_contains "$rendered" "Standup" "stale answer still rendered"
-assert_contains "$rendered" "(stale" "stale answer is marked stale"
+assert_not_contains "$rendered" "Standup" "calendar answer stays out of terminal board"
+assert_not_contains "$rendered" "(stale" "external stale marker stays out of terminal board"
 
 # The fleet collection obeys the same freshness window as the connector, so a
 # --watch tick redraws from the cached snapshot instead of re-reading every
@@ -298,7 +310,7 @@ assert_equals "$collected" "$(fleet_collections)" "render inside the freshness w
 assert_equals "true" "$(printf '%s' "$json" | jq -r '.fleet.cached')" "a reused snapshot is reported as cached"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.working.items | length')" "a cached snapshot still fills the panels"
 rendered=$(run_dashboard) || fail "cached terminal view should render"
-assert_contains "$rendered" "(cached)" "header discloses that the fleet snapshot came from cache"
+assert_contains "$rendered" "old cached" "header discloses that the fleet snapshot came from cache"
 
 json=$(run_dashboard --json --force-refresh) || fail "forced fleet refresh should render"
 assert_equals "$((collected + 1))" "$(fleet_collections)" "force refresh re-collects the fleet snapshot"
@@ -333,8 +345,8 @@ json=$(run_dashboard --json) || fail "dashboard with an aged calendar cache shou
 assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "an aged answer is still a good answer"
 assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer_age_seconds > 86400')" "an aged answer reports its age"
 rendered=$(run_dashboard) || fail "terminal view with an aged calendar cache should render"
-assert_contains "$rendered" "Standup" "an aged answer is still shown"
-assert_contains "$rendered" "collected 3d ago" "an aged answer names how old it is"
+assert_not_contains "$rendered" "Standup" "calendar answer stays out of terminal board"
+assert_not_contains "$rendered" "collected 3d ago" "calendar age stays out of terminal board"
 
 # Inside the freshness window a good answer carries no age note.
 NOW_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -351,24 +363,23 @@ assert_equals "0" "$(printf '%s' "$json" | jq -r '.widgets.seen.items | length')
 assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable")] | length')" "an unreadable seen ledger is disclosed"
 assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable") | .reveal')" "seen.jsonl" "the seen disclosure names the local ledger"
 rendered=$(run_dashboard) || fail "terminal view with an unreadable seen ledger should render"
-assert_contains "$rendered" "seen ledger unreadable" "the seen panel discloses that it could not be read"
-assert_contains "$rendered" "Seen ?" "the stats row does not assert a seen count it could not read"
-assert_not_contains "$rendered" "Seen 0" "an unreadable ledger is not summarised as nothing seen"
+assert_not_contains "$rendered" "seen ledger unreadable" "seen ledger error stays out of terminal board"
+assert_not_contains "$rendered" "Seen" "seen summary stays out of terminal board"
 
 # A connector that dies without writing anything must not read as an empty agenda.
 export FM_DASHBOARD_TEST_SILENT_FAIL=1
 json=$(run_dashboard --json --force-refresh --refresh-external) || fail "dashboard with a silent connector failure should render"
 assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "a silent connector failure is not a good answer"
-assert_not_equals "" "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "a silent connector failure still carries an error message"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector failed" "a silent connector failure still carries an error message"
 rendered=$(run_dashboard) || fail "terminal view after a silent connector failure should render"
-assert_contains "$rendered" "connector failed" "the calendar panel names the connector failure"
+assert_not_contains "$rendered" "connector failed" "connector failure stays out of terminal board"
 unset FM_DASHBOARD_TEST_SILENT_FAIL
 
-# A failed fleet collection must stop rather than draw empty panels as fleet state.
+# A failed fleet collection must stop rather than draw empty task sections as fleet state.
 if FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --force-refresh >"$TMP_ROOT/failed.out" 2>"$TMP_ROOT/failed.err"; then
   fail "a failed fleet collection should not exit 0"
 fi
-assert_not_contains "$(cat "$TMP_ROOT/failed.out")" "(none)" "a failed fleet collection draws no empty panels"
+assert_equals "" "$(cat "$TMP_ROOT/failed.out")" "a failed fleet collection draws no board"
 assert_contains "$(cat "$TMP_ROOT/failed.err")" "fleet snapshot" "a failed fleet collection names the failure"
 if FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --json --force-refresh >"$TMP_ROOT/failed.json" 2>/dev/null; then
   fail "a failed fleet collection should not exit 0 in JSON mode"
@@ -377,12 +388,12 @@ assert_equals "" "$(cat "$TMP_ROOT/failed.json")" "a failed fleet collection emi
 
 # A watch loop must survive a transient collection failure and keep refreshing.
 set -m
-FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --watch 1 --force-refresh \
-  >"$TMP_ROOT/watch.out" 2>"$TMP_ROOT/watch.err" &
+FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --watch 1 --force-refresh   >"$TMP_ROOT/watch.out" 2>"$TMP_ROOT/watch.err" &
 watch_pid=$!
 set +m
 sleep 3
-watch_children=$(pgrep -P "$watch_pid" | tr '\n' ' ')
+watch_children=$(pgrep -P "$watch_pid" | tr '
+' ' ')
 kill -- -"$watch_pid" 2>/dev/null || true
 wait "$watch_pid" 2>/dev/null || true
 assert_not_equals "" "$watch_children" "a transient collection failure should not kill the watch loop"
@@ -395,26 +406,19 @@ for watch_child in $watch_children; do
   kill -0 "$watch_child" 2>/dev/null && watch_survivors="$watch_survivors $watch_child"
 done
 assert_equals "" "${watch_survivors# }" "the watch loop leaves no orphaned dashboard behind"
-assert_equals "true" \
-  "$([ "$(grep -c 'retrying' "$TMP_ROOT/watch.err")" -ge 2 ] && printf 'true' || printf 'false')" \
-  "each failed watch tick reports the failure and retries"
+assert_equals "true"   "$([ "$(grep -c 'retrying' "$TMP_ROOT/watch.err")" -ge 2 ] && printf 'true' || printf 'false')"   "each failed watch tick reports the failure and retries"
 
-# A multi-line connector error must not crowd out the last good answer.
+# A multi-line connector error must not crowd out the last good answer in JSON.
 NOW_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-jq -nc --arg at "$NOW_AT" \
-  '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup\n- 13:00 Review",message:null}' \
-  > "$HOME_DIR/state/dashboard/cache/calendar.json"
+jq -nc --arg at "$NOW_AT"   '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup
+- 13:00 Review",message:null}'   > "$HOME_DIR/state/dashboard/cache/calendar.json"
 export FM_DASHBOARD_TEST_TRACEBACK_FAIL=1
-rendered=$(run_dashboard --force-refresh --refresh-external) \
-  || fail "dashboard with a multi-line connector error should render"
+json=$(run_dashboard --json --force-refresh --refresh-external)   || fail "dashboard with a multi-line connector error should render"
 unset FM_DASHBOARD_TEST_TRACEBACK_FAIL
-assert_contains "$rendered" "09:00 Standup" "a multi-line connector error keeps the last good answer"
-assert_contains "$rendered" "Traceback (most recent call last)" "a multi-line connector error is still reported"
-assert_not_contains "$rendered" "• Traceback" "connector error lines are not rendered as answer bullets"
-assert_not_contains "$rendered" "• RuntimeError" "connector error lines are not rendered as answer bullets"
-assert_not_contains "$rendered" "RuntimeError: boom" "a long connector error is capped rather than printed whole"
-assert_contains "$rendered" "reveal: inspect" "a capped connector error names where to read the rest"
-assert_contains "$rendered" "cache/calendar.json" "the capped connector error points at the widget cache"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "09:00 Standup" "a multi-line connector error keeps the last good answer"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "Traceback (most recent call last)" "a multi-line connector error is still recorded"
+rendered=$(run_dashboard) || fail "terminal view after a multi-line connector error should render"
+assert_not_contains "$rendered" "Traceback" "connector error stays out of terminal board"
 
 # A flag that needs a value must fail rather than silently rendering.
 if run_dashboard --mark-seen >/dev/null 2>"$TMP_ROOT/noid.err"; then
