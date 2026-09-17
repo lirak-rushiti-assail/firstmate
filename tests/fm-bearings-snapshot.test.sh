@@ -730,6 +730,39 @@ test_secondmate_and_child_bounds_are_disclosed() {
   pass "secondmate and per-home child counts are bounded, disclosed, and explicitly expandable"
 }
 
+test_secondmate_queued_bound_is_disclosed() {
+  local home fakebin mate json canonical i
+  home=$(make_home secondmate-queued-bound)
+  : > "$home/data/secondmates.md"
+  mate="$TMP_ROOT/queued-bound-a"
+  make_valid_secondmate_home a "$mate"
+  append_secondmate_registry "$home" a "$mate"
+  : > "$mate/data/backlog.md"
+  printf '## In flight\n\n## Queued\n' >> "$mate/data/backlog.md"
+  i=1
+  while [ "$i" -le 3 ]; do
+    printf -- '- [ ] queued-%s - Queued %s (repo: sample) (kind: ship) (since 2026-07-1%s)\n' \
+      "$i" "$i" "$i" >> "$mate/data/backlog.md"
+    i=$((i + 1))
+  done
+  printf '\n## Done\n' >> "$mate/data/backlog.md"
+  fakebin=$(make_fakebin "$home")
+  PATH="$fakebin:$PATH" FM_SNAPSHOT_SECONDMATE_QUEUED=2 refresh_local_secondmate_ledgers "$home"
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    (.secondmate_current.records[] | select(.id == "a")
+      | .counts.queued == 3 and (.queued | length) == 2
+        and (.omitted | any(.surface == "queued" and .count == 1)))
+  ' >/dev/null || fail "canonical per-home queued bound was not recorded: $canonical"
+  json=$(FM_SNAPSHOT_SECONDMATE_QUEUED=2 run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    [.omitted[] | select(.surface | test("^secondmate a queued rows omitted by snapshot bound: 1$"))]
+    | length == 1 and (.[0].reveal | test("FM_SNAPSHOT_SECONDMATE_QUEUED"))
+  ' >/dev/null || fail "bearings did not disclose the per-home queued bound: $json"
+  pass "per-home queued bounds are disclosed with an expansion knob"
+}
+
 test_parent_decision_is_untrusted_contradiction_only() {
   local home mate fakebin canonical json
   home=$(make_home parent-decision-only)
@@ -1039,6 +1072,52 @@ EOF
       and (.in_flight | any(.doing == "Phase 7 started") | not)
   ' >/dev/null || fail "prior status report influenced the standalone snapshot: $two"
   pass "repeated snapshots keep the same current landed baseline and ignore prior reports"
+}
+
+test_injected_snapshot_is_projected_instead_of_collected() {
+  local home fakebin canonical injected bad json
+  home=$(make_home injected-snapshot)
+  : > "$home/data/secondmates.md"
+  mkdir -p "$home/projects/main-wt"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] main-ship - Collected title (repo: firstmate) (kind: ship) (since 2026-07-09)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$home/state/main-ship.meta" \
+    "window=firstmate:fm-main-ship" "worktree=$home/projects/main-wt" "project=firstmate" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$home/state" main-ship busy
+  printf 'working: projecting an injected snapshot\n' > "$home/state/main-ship.status"
+
+  fakebin=$(make_fakebin "$home")
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json) || fail "canonical snapshot should collect"
+  injected="$home/injected-snapshot.json"
+  printf '%s' "$canonical" \
+    | jq '(.tasks[] | select(.id == "main-ship") | .backlog.title) |= "Injected title"' > "$injected"
+
+  json=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
+    FM_BEARINGS_SNAPSHOT_JSON="$injected" "$BEARINGS" --json) \
+    || fail "bearings should project an injected canonical snapshot"
+  printf '%s' "$json" | jq -e '.in_flight | any(.id == "main-ship" and .name == "Injected title")' >/dev/null \
+    || fail "bearings must project the injected snapshot rather than collect a new one: $json"
+
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
+    FM_BEARINGS_SNAPSHOT_JSON="$injected" "$BEARINGS" --json --all-landed >/dev/null 2>&1; then
+    fail "--all-landed needs its own collection and must reject an injected snapshot"
+  fi
+
+  bad="$home/not-a-snapshot.json"
+  printf '{"schema":"something-else"}\n' > "$bad"
+  if PATH="$fakebin:$PATH" FM_HOME="$home" FM_BEARINGS_NOW=2026-07-11T18:00:00Z \
+    FM_BEARINGS_SNAPSHOT_JSON="$bad" "$BEARINGS" --json >/dev/null 2>&1; then
+    fail "bearings must reject an injected document that is not fm-fleet-snapshot.v1"
+  fi
+  pass "injected canonical snapshot replaces the wrapper's own collection"
 }
 
 test_default_is_bounded_and_local_only() {
@@ -3322,12 +3401,14 @@ test_structured_child_decision_reaches_captains_call
 test_bad_secondmate_homes_never_revive_parent_work
 test_oversized_secondmate_summary_stays_strict_unknown
 test_secondmate_and_child_bounds_are_disclosed
+test_secondmate_queued_bound_is_disclosed
 test_parent_decision_is_untrusted_contradiction_only
 test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
 test_default_is_bounded_and_local_only
+test_injected_snapshot_is_projected_instead_of_collected
 test_toon_json_parity
 test_landed_includes_secondmate_home_merges
 test_landed_accepts_only_kind_owned_delivery_artifacts
