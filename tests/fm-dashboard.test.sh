@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Behavior tests for bin/fm-dashboard.sh: dashboard projection, terminal panels,
-# local seen markers, and read-only M365 cache refresh.
+# Behavior tests for bin/fm-dashboard.sh: today board projection, panel
+# disclosures, saved task details, and fleet snapshot cache reuse.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -18,8 +18,6 @@ YESTERDAY=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d 'yesterday' +%Y-%m
 HOME_DIR="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/data" "$FAKEBIN"
-CALLS="$TMP_ROOT/m365-calls"
-: > "$CALLS"
 COLLECTIONS="$TMP_ROOT/fleet-collections"
 : > "$COLLECTIONS"
 
@@ -71,7 +69,7 @@ cat > "$TMP_ROOT/fleet.json" <<JSON
   ],
   "secondmate_landed": {
     "records": [
-      {"id":"mate-today-1","title":"Mate landed today","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/9","home":"/homes/mate-a","home_id":"mate-a"},
+      {"id":"mate-today-1","title":"Mate landed today","kind":"ship","completion":{"verb":"merged","date":"$TODAY"},"pr_url":"https://example.invalid/pr/9","body_excerpt":"Mate details stay saved but hidden.","home":"/homes/mate-a","home_id":"mate-a"},
       {"id":"mate-old-1","title":"Mate landed earlier","kind":"ship","completion":{"verb":"merged","date":"$YESTERDAY"},"pr_url":"https://example.invalid/pr/8","home":"/homes/mate-a","home_id":"mate-a"}
     ]
   }
@@ -98,27 +96,6 @@ cat "$FM_DASHBOARD_TEST_FLEET"
 SH
 chmod +x "$FAKEBIN/fleet"
 
-cat > "$FAKEBIN/m365" <<'SH'
-printf 'call\n' >> "$FM_DASHBOARD_TEST_CALLS"
-if [ -n "${FM_DASHBOARD_TEST_SILENT_FAIL:-}" ]; then
-  exit 137
-fi
-if [ -n "${FM_DASHBOARD_TEST_TRACEBACK_FAIL:-}" ]; then
-  printf 'Traceback (most recent call last):\n  File "query.py", line 3\n  connect()\nRuntimeError: boom\n'
-  exit 1
-fi
-if [ -n "${FM_DASHBOARD_TEST_FAIL:-}" ]; then
-  printf 'connector refused\n'
-  exit 1
-fi
-case "${2:-}" in
-  *calendar*) printf '{"ok":true,"answer":"- 09:00 Standup\\n- 13:00 Review","reads":[{"is_error":false}]}\n' ;;
-  *emails*|*email*) printf '{"ok":true,"answer":"- Ada: Please review","reads":[{"is_error":false}]}\n' ;;
-  *) printf '{"ok":false,"error":"unexpected prompt"}\n'; exit 1 ;;
-esac
-SH
-chmod +x "$FAKEBIN/m365"
-
 run_dashboard() {
   COLUMNS=100 \
     FM_HOME="$HOME_DIR" \
@@ -126,16 +103,12 @@ run_dashboard() {
     FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_DASHBOARD_BEARINGS_CMD="$FAKEBIN/bearings" \
     FM_DASHBOARD_FLEET_CMD="$FAKEBIN/fleet" \
-    FM_DASHBOARD_M365_HELPER="$FAKEBIN/m365" \
     FM_DASHBOARD_TEST_BEARINGS="$TMP_ROOT/bearings.json" \
-    FM_DASHBOARD_TEST_FLEET="$TMP_ROOT/fleet.json" \
-    FM_DASHBOARD_TEST_CALLS="$CALLS" \
+    FM_DASHBOARD_TEST_FLEET="${FM_DASHBOARD_TEST_FLEET:-$TMP_ROOT/fleet.json}" \
     FM_DASHBOARD_TEST_COLLECTIONS="$COLLECTIONS" \
-    PYTHON_BIN=bash \
     "$DASHBOARD" "$@"
 }
 
-connector_calls() { [ -s "$CALLS" ] && wc -l < "$CALLS" | tr -d ' ' || printf '0'; }
 fleet_collections() { [ -s "$COLLECTIONS" ] && wc -l < "$COLLECTIONS" | tr -d ' ' || printf '0'; }
 
 json=$(run_dashboard --json) || fail "dashboard JSON should render"
@@ -143,77 +116,48 @@ assert_equals "fm-dashboard.v1" "$(printf '%s' "$json" | jq -r '.schema')" "sche
 # One render collects the canonical fleet snapshot once and hands that same
 # collection to the bearings projection (the fake bearings fails otherwise).
 assert_equals "1" "$(fleet_collections)" "one render collects the fleet snapshot once"
-assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.working.items | length')" "working widget uses bearings snapshot"
-assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.next.items | length')" "next widget uses bearings gates"
-assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.done.items | length')" "done widget uses landed rows"
-assert_equals "2" "$(printf '%s' "$json" | jq -r '.widgets.today.count')" "today summary filters completion date"
-# Today summary answers for the same fleet the Done actions panel describes, so a
-# secondmate home's delivery landed today counts too.
-assert_equals "mate-a" "$(printf '%s' "$json" | jq -r '.widgets.today.items[] | select(.id == "mate-today-1") | .owner')" "secondmate delivery landed today is attributed to its home"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.items[] | select(.id == "mate-old-1")] | length')" "secondmate delivery landed earlier is not counted today"
-# The today summary and the Done actions panel answer the same question, so the
-# today widget uses the shared landed selector: a closed captain call is a
-# decision, not a delivery, and must not be counted as work landed today.
-assert_equals "today-1" "$(printf '%s' "$json" | jq -r '.widgets.today.items[0].id')" "today summary lists the landed delivery"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.items[] | select(.id == "cap-1")] | length')" "closed captain call is not counted as landed today"
-assert_equals "https://example.invalid/pr/1" "$(printf '%s' "$json" | jq -r '.widgets.today.items[0].artifact')" "today item carries the shared landed artifact"
 
-# Bearings bounds each section and discloses the gap in omitted[]; the panels
-# that render a bounded section must not present it as the complete set.
-assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("landed showing"))] | length')" "done widget keeps its own truncation disclosure"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface == "task paths")] | length')" "unrelated omitted surfaces stay out of the done widget"
-# A capped secondmate Done set bounds the landed panel even though its surface
-# text does not start with "landed", and an unavailable registry bounds every
-# fleet panel because it explains a short or empty one.
-assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("secondmate home Done capped"))] | length')" "capped secondmate Done set is disclosed on the done panel"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.working.omitted[] | select(.surface | startswith("secondmate home Done capped"))] | length')" "a landed-only bound stays off the working panel"
-for w in "done" "working" "next"; do
-  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate registry unavailable"))] | length')" "unavailable registry is disclosed on the $w panel"
-done
-
-# A home dropped by the snapshot bound contributes no underway, gate, or landed
-# rows, so every panel is short and every panel must say so. The same holds for a
-# home served from its cached ledger: its rows are present but stale.
-for w in "done" "working" "next"; do
-  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("registered secondmates omitted"))] | length')" "snapshot-bound home drop is disclosed on the $w panel"
-  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | endswith("served from cached home ledger"))] | length')" "cached home ledger is disclosed on the $w panel"
-done
-
-# FM_BEARINGS_SECONDMATES caps only the bearings "secondmates" section, which this
-# dashboard never renders, so it must not warn that complete panels are short.
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets[] | objects | .omitted // [] | .[] | select(.surface | startswith("secondmates showing"))] | length')" "a cap on an unrendered section warns on no panel"
-assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.working.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children bound only the working panel"
-
-# Today is fleet-scoped like Done actions, so a gap that hides landed rows must be
-# disclosed there too rather than letting the count read as the whole day. Today
-# builds from the canonical snapshot, not the bearings landed array, so only bounds
-# that really drop rows from the snapshot reach it.
-for w in "done" "today"; do
-  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate home Done capped"))] | length')" "a snapshot-layer Done cap is disclosed on the $w panel"
-  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("secondmate registry unavailable"))] | length')" "unavailable registry is disclosed on the $w panel"
-done
-
-# "landed showing N of M" caps only the bearings landed array that Done actions
-# renders; it can drop no Today row, so it must not mark a complete day partial.
-assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("landed showing"))] | length')" "a bearings display cap is disclosed on the done panel"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.omitted[] | select(.surface | startswith("landed"))] | length')" "a bearings display cap does not mark the today panel short"
-
-# Parent activity evidence feeds no rendered panel, and an unstructured main row can
-# never have been dropped from the landed set, so neither may mark a full list short.
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets[] | objects | .omitted // [] | .[] | select(.surface | startswith("secondmate parent activity evidence"))] | length')" "parent activity evidence warns on no panel"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.done.omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows do not bound the done panel"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.today.omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows do not bound the today panel"
-for w in "working" "next"; do
-  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg w "$w" '[.widgets[$w].omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows bound the $w panel"
-done
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.next.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children do not bound the next panel"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "--refresh-external" "calendar widget starts with refresh hint"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items | length')" "today board lists queued tasks as todo"
 assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items | length')" "today board lists active tasks as in progress"
 assert_equals "2" "$(printf '%s' "$json" | jq -r '.widgets.board.done.items | length')" "today board lists today's finished deliveries"
+# The board is the whole product surface: it must not carry a second spelling of
+# the same columns for a caller nothing has.
+assert_equals '["board"]' "$(printf '%s' "$json" | jq -c '.widgets | keys')" "the model defines the board and nothing else"
+
+# Done is fleet-scoped, so a secondmate home's delivery landed today counts too,
+# and a closed captain call is a decision rather than a delivery.
+assert_equals "mate-a" "$(printf '%s' "$json" | jq -r '.widgets.board.done.items[] | select(.id == "mate-today-1") | .owner')" "secondmate delivery landed today is attributed to its home"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.done.items[] | select(.id == "mate-old-1")] | length')" "secondmate delivery landed earlier is not counted today"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.done.items[] | select(.id == "cap-1")] | length')" "closed captain call is not counted as landed today"
+assert_equals "https://example.invalid/pr/1" "$(printf '%s' "$json" | jq -r '.widgets.board.done.items[0].artifact')" "done item carries the shared landed artifact"
+
+# Saved details stay in JSON for every column, including secondmate rows, whose
+# excerpt has to survive the home-summary boundary to get here.
 assert_equals "Todo details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items[0].details')" "todo details stay persisted in JSON"
 assert_equals "In-progress details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items[0].details')" "in-progress details stay persisted in JSON"
 assert_equals "Done details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.done.items[] | select(.id == "today-1") | .details')" "done details stay persisted in JSON"
+assert_equals "Mate details stay saved but hidden." "$(printf '%s' "$json" | jq -r '.widgets.board.done.items[] | select(.id == "mate-today-1") | .details')" "secondmate done details stay persisted in JSON"
+
+# Bearings bounds each section and discloses the gap in omitted[]; a column must
+# disclose only the bounds that can really drop one of its own rows.
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.board.in_progress.omitted[] | select(.surface | startswith("in_flight showing"))] | length')" "the in-progress bound is disclosed on the in-progress column"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.board.in_progress.omitted[] | select(.surface | test("active children omitted"))] | length')" "omitted active children bound the in-progress column"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.board.done.omitted[] | select(.surface | startswith("secondmate home Done capped"))] | length')" "a capped secondmate Done set is disclosed on the done column"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows bound the todo column"
+for c in "in_progress" "done"; do
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg c "$c" '[.widgets.board[$c].omitted[] | select(.surface | startswith("secondmate registry unavailable"))] | length')" "an unavailable registry is disclosed on the $c column"
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg c "$c" '[.widgets.board[$c].omitted[] | select(.surface | startswith("registered secondmates omitted"))] | length')" "a snapshot-bound home drop is disclosed on the $c column"
+  assert_equals "1" "$(printf '%s' "$json" | jq -r --arg c "$c" '[.widgets.board[$c].omitted[] | select(.surface | endswith("served from cached home ledger"))] | length')" "a cached home ledger is disclosed on the $c column"
+done
+
+# The Todo column is read straight from the main backlog, so bounds that describe
+# the bearings gates array or a secondmate home can drop none of its rows and must
+# not tell the operator that a complete column is short.
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.omitted[] | select(.surface | startswith("gates showing"))] | length')" "a bearings gates cap does not mark the todo column short"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.omitted[] | select(.surface | startswith("secondmate") or startswith("registered secondmates"))] | length')" "secondmate bounds do not mark the todo column short"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.done.omitted[] | select(.surface | startswith("landed showing"))] | length')" "a bearings landed display cap does not mark the done column short"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.done.omitted[] | select(.surface | startswith("main unstructured current backlog"))] | length')" "unstructured main rows do not bound the done column"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board[] | .omitted[] | select(.surface | startswith("secondmates showing") or startswith("secondmate parent activity evidence") or (. == "task paths"))] | length')" "a bound on an unrendered section warns on no column"
 
 rendered=$(run_dashboard) || fail "dashboard terminal view should render"
 assert_contains "$rendered" "Todo 1 | In Progress 1 | Done 2" "terminal view starts with today board counts"
@@ -224,91 +168,56 @@ assert_contains "$rendered" "[ ] Todo today [firstmate]" "todo task rendered"
 assert_contains "$rendered" "[>] Build dashboard [firstmate]" "active task rendered"
 assert_contains "$rendered" "[x] Finished today [firstmate]" "done task rendered"
 assert_contains "$rendered" "[x] Mate landed today [mate-a]" "secondmate done task rendered"
-assert_contains "$rendered" "in_flight showing 1 of 30" "working panel discloses its truncation"
+assert_contains "$rendered" "in_flight showing 1 of 30" "the in-progress column discloses its truncation"
 assert_contains "$rendered" "secondmate registry unavailable: read failed" "partial fleet data is visible in the sections it bounds"
-assert_not_contains "$rendered" "Next calendar events" "calendar widget stays out of terminal board"
-assert_not_contains "$rendered" "Important emails" "email widget stays out of terminal board"
+assert_not_contains "$rendered" "gates showing 1 of 25" "a bound on no rendered column is not printed"
 assert_not_contains "$rendered" "╭" "terminal board uses no box drawing"
 assert_not_contains "$rendered" "●" "terminal board uses ascii markers"
 assert_not_contains "$rendered" "Todo details stay saved" "terminal board hides saved details"
 assert_not_contains "$rendered" "task paths" "unrelated omitted surfaces are not rendered as panel truncation"
 
-seen_out=$(run_dashboard --mark-seen email-123) || fail "mark seen should succeed"
-assert_contains "$seen_out" "seen: email-123" "mark seen reports id"
-json=$(run_dashboard --json) || fail "dashboard JSON after seen marker should render"
-assert_equals "email-123" "$(printf '%s' "$json" | jq -r '.widgets.seen.items[0].id')" "seen marker appears in dashboard"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted | length')" "an unbounded seen ledger discloses nothing"
+# The Todo column is bounded like the others: past the bound it shows the newest
+# rows and says how many it dropped rather than printing the whole backlog.
+cat > "$TMP_ROOT/fleet-many.json" <<JSON
+{
+  "schema": "fm-fleet-snapshot.v1",
+  "generated": "$NOW",
+  "backlog": {
+    "records": [
+$(for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf '      {"state":"queued","structured":true,"id":"todo-%s","title":"Queued %s","repo":"firstmate","kind":"ship"}' "$i" "$i"
+    [ "$i" = 12 ] || printf ',\n'
+  done)
+    ]
+  },
+  "tasks": [],
+  "secondmate_landed": {"records": []}
+}
+JSON
+json=$(FM_DASHBOARD_TEST_FLEET="$TMP_ROOT/fleet-many.json" \
+  run_dashboard --json --force-refresh) || fail "bounded todo render should succeed"
+assert_equals "10" "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items | length')" "the todo column keeps its bound"
+assert_equals "12" "$(printf '%s' "$json" | jq -r '.widgets.board.todo.count')" "the todo column reports the full queued count"
+assert_equals "todo-1" "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items[0].id')" "the todo column keeps backlog order"
+assert_equals "todo showing 10 of 12" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.omitted[] | select(.surface | startswith("todo showing"))] | .[0].surface')" "the todo column discloses the rows it dropped"
+assert_contains "$(printf '%s' "$json" | jq -r '.widgets.board.todo.omitted[] | select(.surface | startswith("todo showing")) | .reveal')" "FM_DASHBOARD_TODO" "the todo disclosure names how to reveal the rest"
+json=$(FM_DASHBOARD_TODO=20 FM_DASHBOARD_TEST_FLEET="$TMP_ROOT/fleet-many.json" \
+  run_dashboard --json --force-refresh) || fail "raised todo bound render should succeed"
+assert_equals "12" "$(printf '%s' "$json" | jq -r '.widgets.board.todo.items | length')" "raising the todo bound reveals the rest"
+assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.board.todo.omitted[] | select(.surface | startswith("todo showing"))] | length')" "a complete todo column discloses no drop"
+if FM_DASHBOARD_TODO=0 run_dashboard --json >/dev/null 2>"$TMP_ROOT/todo.err"; then
+  fail "a zero todo bound should not exit 0"
+fi
+assert_contains "$(cat "$TMP_ROOT/todo.err")" "FM_DASHBOARD_TODO requires a positive integer" "an unusable todo bound says so"
+run_dashboard --json --force-refresh >/dev/null || fail "restored fleet render should succeed"
 
-# The Seen panel keeps the most recent 12 markers; past that it must say so rather
-# than read as the complete set of what the operator has marked seen.
-for i in 2 3 4 5 6 7 8 9 10 11 12 13 14; do
-  run_dashboard --mark-seen "email-$i" >/dev/null || fail "mark seen $i should succeed"
-done
-json=$(run_dashboard --json) || fail "dashboard JSON with a bounded seen ledger should render"
-assert_equals "12" "$(printf '%s' "$json" | jq -r '.widgets.seen.items | length')" "seen panel keeps the most recent 12 markers"
-assert_equals "email-14" "$(printf '%s' "$json" | jq -r '.widgets.seen.items[0].id')" "newest seen marker stays at the top"
-assert_equals "seen showing 12 of 14" "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[0].surface')" "seen panel discloses the markers it dropped"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[0].reveal')" "seen.jsonl" "seen disclosure names the local ledger"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '[.widgets.seen.items[] | select(.id == "email-123")] | length')" "the oldest markers are the ones dropped"
-rendered=$(run_dashboard) || fail "terminal view with a bounded seen ledger should render"
-assert_not_contains "$rendered" "seen showing 12 of 14" "seen ledger stays out of terminal board"
-
-json=$(run_dashboard --json --refresh-external) || fail "external refresh should render"
-assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "calendar cache refreshed"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "calendar answer cached"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.email.answer')" "Please review" "email answer cached"
-assert_no_grep "reads" "$HOME_DIR/state/dashboard/cache/calendar.json" "cache does not persist connector evidence payload"
-assert_equals "2" "$(connector_calls)" "first external refresh queries both widgets once"
-
-# A repeated refresh inside the freshness window reuses the cache instead of
-# re-querying the connector, so a --watch tick cannot spin the connector.
-json=$(run_dashboard --json --refresh-external) || fail "cached external refresh should render"
-assert_equals "2" "$(connector_calls)" "refresh within freshness window reuses cache"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "cached calendar answer still served"
-
-json=$(run_dashboard --json --force-refresh) || fail "forced refresh should render"
-assert_equals "4" "$(connector_calls)" "force refresh bypasses the freshness window"
-
-export FM_DASHBOARD_CACHE_TTL=0
-json=$(run_dashboard --json --refresh-external) || fail "zero-ttl refresh should render"
-assert_equals "6" "$(connector_calls)" "zero freshness window always refreshes"
-unset FM_DASHBOARD_CACHE_TTL
-
-# A failed refresh keeps the last good answer and reports the error with it.
-export FM_DASHBOARD_TEST_FAIL=1
-json=$(run_dashboard --json --force-refresh) || fail "failed refresh should still render"
-assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "failed refresh marks widget not ok"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "failed refresh keeps last good answer"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector refused" "failed refresh records the error"
-
-# The answer a failed refresh carried forward is itself the last good answer for the
-# next failure, so an outage lasting more than one refresh does not erase the agenda.
-json=$(run_dashboard --json --force-refresh) || fail "second failed refresh should still render"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "a repeated failure keeps the last good calendar answer"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.email.answer')" "Please review" "a repeated failure keeps the last good email answer"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector refused" "a repeated failure still reports the current error"
-json=$(run_dashboard --json --force-refresh) || fail "third failed refresh should still render"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "Standup" "the last good answer survives a prolonged outage"
-
-# A carried-forward answer keeps the instant it was actually good, so a prolonged
-# outage cannot present a stale agenda as current.
-assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer_generated == .widgets.calendar.generated')" "a failed refresh does not restamp the answer as freshly collected"
-assert_equals "true" "$(printf '%s' "$json" | jq -r '(.widgets.calendar.answer_age_seconds // -1) >= 0')" "a carried-forward answer reports its age"
-rendered=$(run_dashboard) || fail "terminal view during an outage should render"
-assert_not_contains "$rendered" "stale for " "external widget outage stays out of terminal board"
-unset FM_DASHBOARD_TEST_FAIL
-rendered=$(run_dashboard) || fail "terminal view should render after a failed refresh"
-assert_not_contains "$rendered" "Standup" "calendar answer stays out of terminal board"
-assert_not_contains "$rendered" "(stale" "external stale marker stays out of terminal board"
-
-# The fleet collection obeys the same freshness window as the connector, so a
-# --watch tick redraws from the cached snapshot instead of re-reading every
-# registered home once per tick.
+# The fleet collection obeys a freshness window, so a repeated render redraws from
+# the cached snapshot instead of re-reading every registered home.
 collected=$(fleet_collections)
 json=$(run_dashboard --json) || fail "cached fleet render should succeed"
 assert_equals "$collected" "$(fleet_collections)" "render inside the freshness window reuses the collected snapshot"
 assert_equals "true" "$(printf '%s' "$json" | jq -r '.fleet.cached')" "a reused snapshot is reported as cached"
-assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.working.items | length')" "a cached snapshot still fills the panels"
+assert_equals "1" "$(printf '%s' "$json" | jq -r '.widgets.board.in_progress.items | length')" "a cached snapshot still fills the columns"
 rendered=$(run_dashboard) || fail "cached terminal view should render"
 assert_contains "$rendered" "old cached" "header discloses that the fleet snapshot came from cache"
 
@@ -334,47 +243,6 @@ json=$(run_dashboard --json) || fail "zero-ttl fleet render should succeed"
 assert_equals "$((collected + 1))" "$(fleet_collections)" "zero freshness window always re-collects the fleet snapshot"
 unset FM_DASHBOARD_CACHE_TTL
 
-# A plain run serves the cached answer without re-querying, so a successful answer
-# that has aged past the freshness window must report how old it is rather than
-# reading as today's agenda.
-OLD_AT=$(date -u -v-3d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)
-jq -nc --arg at "$OLD_AT" \
-  '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup",message:null}' \
-  > "$HOME_DIR/state/dashboard/cache/calendar.json"
-json=$(run_dashboard --json) || fail "dashboard with an aged calendar cache should render"
-assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "an aged answer is still a good answer"
-assert_equals "true" "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer_age_seconds > 86400')" "an aged answer reports its age"
-rendered=$(run_dashboard) || fail "terminal view with an aged calendar cache should render"
-assert_not_contains "$rendered" "Standup" "calendar answer stays out of terminal board"
-assert_not_contains "$rendered" "collected 3d ago" "calendar age stays out of terminal board"
-
-# Inside the freshness window a good answer carries no age note.
-NOW_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-jq -nc --arg at "$NOW_AT" \
-  '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup",message:null}' \
-  > "$HOME_DIR/state/dashboard/cache/calendar.json"
-rendered=$(run_dashboard) || fail "terminal view with a fresh calendar cache should render"
-assert_not_contains "$rendered" "collected" "a fresh answer is not labelled old"
-
-# A seen ledger that cannot be parsed must not read as "nothing marked seen".
-printf 'not json at all\n' >> "$HOME_DIR/state/dashboard/seen.jsonl"
-json=$(run_dashboard --json) || fail "dashboard with an unreadable seen ledger should render"
-assert_equals "0" "$(printf '%s' "$json" | jq -r '.widgets.seen.items | length')" "an unreadable seen ledger yields no items"
-assert_equals "1" "$(printf '%s' "$json" | jq -r '[.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable")] | length')" "an unreadable seen ledger is disclosed"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.seen.omitted[] | select(.surface == "seen ledger unreadable") | .reveal')" "seen.jsonl" "the seen disclosure names the local ledger"
-rendered=$(run_dashboard) || fail "terminal view with an unreadable seen ledger should render"
-assert_not_contains "$rendered" "seen ledger unreadable" "seen ledger error stays out of terminal board"
-assert_not_contains "$rendered" "Seen" "seen summary stays out of terminal board"
-
-# A connector that dies without writing anything must not read as an empty agenda.
-export FM_DASHBOARD_TEST_SILENT_FAIL=1
-json=$(run_dashboard --json --force-refresh --refresh-external) || fail "dashboard with a silent connector failure should render"
-assert_equals "false" "$(printf '%s' "$json" | jq -r '.widgets.calendar.ok')" "a silent connector failure is not a good answer"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "connector failed" "a silent connector failure still carries an error message"
-rendered=$(run_dashboard) || fail "terminal view after a silent connector failure should render"
-assert_not_contains "$rendered" "connector failed" "connector failure stays out of terminal board"
-unset FM_DASHBOARD_TEST_SILENT_FAIL
-
 # A failed fleet collection must stop rather than draw empty task sections as fleet state.
 if FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --force-refresh >"$TMP_ROOT/failed.out" 2>"$TMP_ROOT/failed.err"; then
   fail "a failed fleet collection should not exit 0"
@@ -386,56 +254,12 @@ if FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --json --force-refresh >"$TMP_RO
 fi
 assert_equals "" "$(cat "$TMP_ROOT/failed.json")" "a failed fleet collection emits no JSON document"
 
-# A watch loop must survive a transient collection failure and keep refreshing.
-set -m
-FM_DASHBOARD_TEST_FLEET_FAIL=1 run_dashboard --watch 1 --force-refresh   >"$TMP_ROOT/watch.out" 2>"$TMP_ROOT/watch.err" &
-watch_pid=$!
-set +m
-sleep 3
-watch_children=$(pgrep -P "$watch_pid" | tr '
-' ' ')
-kill -- -"$watch_pid" 2>/dev/null || true
-wait "$watch_pid" 2>/dev/null || true
-assert_not_equals "" "$watch_children" "a transient collection failure should not kill the watch loop"
-watch_survivors=
-for watch_child in $watch_children; do
-  for _ in 1 2 3 4 5; do
-    kill -0 "$watch_child" 2>/dev/null || break
-    sleep 0.2
-  done
-  kill -0 "$watch_child" 2>/dev/null && watch_survivors="$watch_survivors $watch_child"
+# Refresh is re-invocation, so the removed flags must be rejected rather than
+# silently ignored by the parser.
+for removed in "--watch" "--mark-seen" "--refresh-external"; do
+  if run_dashboard "$removed" 1 >/dev/null 2>&1; then
+    fail "$removed should not be accepted"
+  fi
 done
-assert_equals "" "${watch_survivors# }" "the watch loop leaves no orphaned dashboard behind"
-assert_equals "true"   "$([ "$(grep -c 'retrying' "$TMP_ROOT/watch.err")" -ge 2 ] && printf 'true' || printf 'false')"   "each failed watch tick reports the failure and retries"
-
-# A multi-line connector error must not crowd out the last good answer in JSON.
-NOW_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-jq -nc --arg at "$NOW_AT"   '{generated:$at,answer_generated:$at,ok:true,answer:"- 09:00 Standup
-- 13:00 Review",message:null}'   > "$HOME_DIR/state/dashboard/cache/calendar.json"
-export FM_DASHBOARD_TEST_TRACEBACK_FAIL=1
-json=$(run_dashboard --json --force-refresh --refresh-external)   || fail "dashboard with a multi-line connector error should render"
-unset FM_DASHBOARD_TEST_TRACEBACK_FAIL
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.answer')" "09:00 Standup" "a multi-line connector error keeps the last good answer"
-assert_contains "$(printf '%s' "$json" | jq -r '.widgets.calendar.message')" "Traceback (most recent call last)" "a multi-line connector error is still recorded"
-rendered=$(run_dashboard) || fail "terminal view after a multi-line connector error should render"
-assert_not_contains "$rendered" "Traceback" "connector error stays out of terminal board"
-
-# A flag that needs a value must fail rather than silently rendering.
-if run_dashboard --mark-seen >/dev/null 2>"$TMP_ROOT/noid.err"; then
-  fail "--mark-seen without an id should not exit 0"
-fi
-assert_contains "$(cat "$TMP_ROOT/noid.err")" "--mark-seen requires an id" "--mark-seen without an id says so"
-if run_dashboard --watch >/dev/null 2>"$TMP_ROOT/nowatch.err"; then
-  fail "--watch without a value should not exit 0"
-fi
-assert_contains "$(cat "$TMP_ROOT/nowatch.err")" "--watch requires a positive integer" "--watch without a value says so"
-if run_dashboard --mark-seen "" >/dev/null 2>"$TMP_ROOT/emptyid.err"; then
-  fail "--mark-seen with an empty id should not exit 0"
-fi
-assert_contains "$(cat "$TMP_ROOT/emptyid.err")" "--mark-seen requires an id" "--mark-seen with an empty id says so"
-if run_dashboard --watch "" >/dev/null 2>"$TMP_ROOT/emptywatch.err"; then
-  fail "--watch with an empty value should not exit 0"
-fi
-assert_contains "$(cat "$TMP_ROOT/emptywatch.err")" "--watch requires a positive integer" "--watch with an empty value says so"
 
 pass "fm-dashboard"
