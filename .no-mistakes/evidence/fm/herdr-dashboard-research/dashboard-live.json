@@ -1,0 +1,121 @@
+{
+  "schema": "fm-dashboard.v1",
+  "generated": "2026-09-17T15:05:44Z",
+  "home": "/private/tmp/fmdash-live/home",
+  "today": "2026-09-17",
+  "fleet": {
+    "generated": "2026-09-17T15:05:43Z",
+    "age_seconds": 1,
+    "cached": true
+  },
+  "widgets": {
+    "board": {
+      "todo": {
+        "items": [
+          {
+            "id": "next-docs",
+            "title": "Write the operator docs",
+            "kind": "ship",
+            "repo": "firstmate",
+            "owner": "(main)",
+            "reason": null,
+            "since": "2026-09-17",
+            "details": "Detail: cover the Herdr pane launch and the cache window."
+          },
+          {
+            "id": "mate-a/mate-todo",
+            "title": "Mate queued work",
+            "kind": "ship",
+            "repo": "materepo",
+            "owner": "mate-a",
+            "reason": null,
+            "since": "2026-09-17",
+            "details": "Detail: mate detail stays saved but hidden."
+          },
+          {
+            "id": "next-tests",
+            "title": "Add board regression tests",
+            "kind": "ship",
+            "repo": "firstmate",
+            "owner": "(main)",
+            "reason": null,
+            "since": "2026-09-16",
+            "details": null
+          }
+        ],
+        "count": 3,
+        "omitted": []
+      },
+      "in_progress": {
+        "items": [
+          {
+            "id": "ship-dash",
+            "title": "Build the today dashboard",
+            "kind": "ship",
+            "repo": "firstmate",
+            "state": "worker",
+            "doing": "worker",
+            "owner": "(main)",
+            "details": null
+          },
+          {
+            "id": "held-api",
+            "title": "Wire the Herdr pane",
+            "kind": "ship",
+            "repo": "firstmate",
+            "state": "worker",
+            "doing": "worker",
+            "owner": "(main)",
+            "details": null
+          },
+          {
+            "id": "mate-a/mate-held",
+            "title": "Mate held work",
+            "kind": "ship",
+            "repo": "materepo",
+            "state": "in_flight",
+            "doing": "waiting on the captain",
+            "owner": "mate-a",
+            "details": null
+          }
+        ],
+        "omitted": [
+          {
+            "surface": "main in-flight backlog item(s) have no child metadata: 2",
+            "reveal": "inspect main data/backlog.md In flight vs state/*.meta"
+          }
+        ]
+      },
+      "done": {
+        "items": [
+          {
+            "id": "done-today",
+            "title": "Ship the board columns",
+            "kind": "ship",
+            "repo": "firstmate",
+            "completion": {
+              "verb": "merged",
+              "date": "2026-09-17"
+            },
+            "owner": "(main)",
+            "details": null,
+            "artifact": "https://github.com/x/firstmate/pull/11"
+          },
+          {
+            "id": "mate-done",
+            "title": "Mate landed today",
+            "kind": "ship",
+            "completion": {
+              "verb": "merged",
+              "date": "2026-09-17"
+            },
+            "owner": "mate-a",
+            "details": null,
+            "artifact": "https://github.com/x/materepo/pull/5"
+          }
+        ],
+        "omitted": []
+      }
+    }
+  }
+}

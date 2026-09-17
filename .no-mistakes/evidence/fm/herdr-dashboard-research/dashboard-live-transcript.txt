@@ -1,0 +1,86 @@
+$ COLUMNS=100 bin/fm-dashboard.sh   # live fleet: this home + registered secondmate mate-a
+Firstmate today board 2026-09-17T15:05:43Z
+Todo 3 | In Progress 3 | Done 2
+---------------------------------------------------------------------------------------------------
+TODO
+----
+  [ ] Write the operator docs [firstmate]
+  [ ] Mate queued work [materepo]
+  [ ] Add board regression tests [firstmate]
+
+IN PROGRESS
+-----------
+  [>] Build the today dashboard [firstmate]
+  [>] Wire the Herdr pane [firstmate]
+  [>] Mate held work [materepo]
+  ! main in-flight backlog item(s) have no child metadata: 2 (reveal: inspect main data/backlog....
+
+DONE
+----
+  [x] Ship the board columns [firstmate]
+  [x] Mate landed today [mate-a]
+
+
+$ bin/fm-dashboard.sh | grep -c Detail:   # saved task details stay out of the terminal board
+0
+
+$ FM_DASHBOARD_TODO=1 bin/fm-dashboard.sh   # bounded todo discloses the rest
+TODO
+----
+  [ ] Write the operator docs [firstmate]
+  ! todo showing 1 of 3 (reveal: raise FM_DASHBOARD_TODO)
+
+$ FM_DASHBOARD_TODO=0 bin/fm-dashboard.sh
+fm-dashboard: FM_DASHBOARD_TODO requires a positive integer
+rc=1
+$ bin/fm-dashboard.sh --watch 5   # removed flag rejected
+fm-dashboard.sh - render a local Firstmate today board for a Herdr-hosted pane.
+
+Usage:
+  fm-dashboard.sh [--json] [--force-refresh]
+  fm-dashboard.sh --help
+
+The dashboard is terminal-first: it renders plain ANSI Todo, In Progress, and
+Done panels that work in any terminal, including a Herdr pane, and needs no Herdr
+plugin or TUI API today.
+A Herdr plugin launcher can come later without changing this projection.
+
+The dashboard collects the canonical fm-fleet-snapshot.sh document once per
+refresh and projects it twice: directly for today's Todo and Done board columns,
+and through fm-bearings-snapshot.sh (FM_BEARINGS_SNAPSHOT_JSON) for the active
+In Progress column, so every column describes the same instant and one refresh
+costs one remote-ledger collection. That collection is itself reused from
+state/dashboard/cache/fleet.json while it is younger than the freshness window
+(default 300s, FM_DASHBOARD_CACHE_TTL), so a re-run redraws from the cached
+snapshot instead of re-reading every remote home; the header reports the
+snapshot's age whenever a panel is drawn from cache. That reuse is keyed on the
+FM_SNAPSHOT_* collection settings as well as age, so raising a bound a panel's
+disclosure names re-collects instead of replaying a snapshot collected under the
+old bound. --force-refresh bypasses the freshness window for one run.
+Collecting a fresh snapshot lets fm-fleet-snapshot.sh refresh its parent-side
+remote-ledger cache, which is the only fleet state any dashboard run writes.
+All three columns are fleet-scoped: each unions this home's backlog rows with the
+registered secondmate homes' own structured rows, so a task is visible as todo
+before it shows up in progress and again once it lands. In Progress keeps every
+live in-flight row that the snapshot publishes, including this home's held rows and
+programs that the bearings projection routes to its own decision and gate sections,
+and a secondmate home's in-flight rows whose child is parked, paused, or blocked.
+A secondmate home publishes one captain-actionable inventory that mixes queued and
+held in-flight rows, so the board splits it on the row's own state rather than
+reading all of it as todo, and namespaces every secondmate row as <home>/<id> so a
+row more than one published surface carries is listed once. A secondmate in-flight
+row of kind program is the one live shape no home summary publishes, so the board
+cannot show it.
+The Todo column shows the newest FM_DASHBOARD_TODO queued rows by filing date
+(default 10, undated last) and discloses the rest rather than printing the whole
+backlog.
+Saved task details come from backlog body text and stay in JSON; the terminal
+board intentionally hides them.
+The script never mutates backlog, task state, GitHub, Linear, or any Herdr
+session state.
+Columns disclose what the snapshot could not fully read: a bounded or partial
+section prints a concise trailing line naming the gap and how to reveal it.
+rc=2
+$ FM_DASHBOARD_FLEET_CMD=/usr/bin/false bin/fm-dashboard.sh --force-refresh
+fm-dashboard: cannot read fleet snapshot
+rc=1
