@@ -1099,6 +1099,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
           hold_age_days:(.hold_age_days // null),
           captain_actionable:(.captain_actionable // false),
           repo:((.repo // null) | if . == null then null else trunc(120) end),
+          body_excerpt:((.body_excerpt // null) | if . == null then null else trunc(240) end),
           kind:((.kind // null) | if . == null then null else trunc(40) end),
           since:((.since // null) | if . == null then null else trunc(40) end)}]
           | ((map(select(.captain_actionable != true)) | newest_filed_first)

@@ -24,8 +24,14 @@
 # old bound. --force-refresh bypasses the freshness window for one run.
 # Collecting a fresh snapshot lets fm-fleet-snapshot.sh refresh its parent-side
 # remote-ledger cache, which is the only fleet state any dashboard run writes.
-# The Todo column shows the newest FM_DASHBOARD_TODO structured queued rows
-# (default 10) and discloses the rest rather than printing the whole backlog.
+# All three columns are fleet-scoped: each unions this home's backlog rows with the
+# registered secondmate homes' own structured rows, so a task is visible as todo
+# before it shows up in progress and again once it lands. In Progress keeps every
+# live in-flight row, including held rows and programs that the bearings projection
+# routes to its own decision and gate sections.
+# The Todo column shows the newest FM_DASHBOARD_TODO queued rows by filing date
+# (default 10, undated last) and discloses the rest rather than printing the whole
+# backlog.
 # Saved task details come from backlog body text and stay in JSON; the terminal
 # board intentionally hides them.
 # The script never mutates backlog, task state, GitHub, Linear, or any Herdr
@@ -173,9 +179,7 @@ gather_dashboard_json() {
     --argjson fleet_cached "$fleet_cached" \
     --argjson todo_limit "$TODO_LIMIT" \
     --arg today "$today" \
-    --arg fm_home "$FM_HOME" \
-    --arg herdr_env "${HERDR_ENV:-}" \
-    --arg herdr_session "${HERDR_SESSION:-}" "$FM_LANDED_JQ_DEFS"'
+    --arg fm_home "$FM_HOME" "$FM_LANDED_JQ_DEFS"'
       def arr($x): if ($x | type) == "array" then $x else [] end;
       ($b[0] // {}) as $b0
       | ($f[0] // {}) as $f0
@@ -184,24 +188,57 @@ gather_dashboard_json() {
           if startswith("secondmate home Done capped") then ["done"]
           elif startswith("in_flight") or startswith("main in-flight")
             or test("^secondmate .+ active children omitted") then ["in_progress"]
-          elif startswith("main unstructured current backlog") then ["todo"]
+          elif startswith("main unstructured current backlog") then ["todo","in_progress"]
           elif startswith("secondmate registry")
             or startswith("registered secondmates omitted")
             or startswith("secondmate home(s) with unreadable structured state")
-            or test(" served from cached home ledger$") then ["in_progress","done"]
+            or test(" served from cached home ledger$") then ["todo","in_progress","done"]
           else [] end;
       def omitted_for($panel):
           [ $omitted[] | select((((.surface // "") | panels_bounded) | index($panel)) != null) ];
       def task_detail($id):
           ([arr($f0.tasks)[]? | select(.id == $id) | .backlog.body_excerpt // empty][0] // null);
-      (arr($f0.backlog.records)
+      def task_state($id):
+          ([arr($f0.tasks)[]? | select(.id == $id) | .current_state // empty][0] // null);
+      def since_epoch:
+          (.since // null) as $s
+          | if ($s | type) != "string" then null
+            elif ($s | test("T")) then (try ($s | fromdateiso8601) catch null)
+            else (try (($s + "T00:00:00Z") | fromdateiso8601) catch null) end;
+      def newest_since_first:
+          to_entries
+          | sort_by((.value | since_epoch) as $epoch
+              | if $epoch == null then [1, 0, .key] else [0, -$epoch, .key] end)
+          | map(.value);
+      def structured_homes:
+          arr($f0.secondmate_current.records)
+          | map(select(.provenance.selected == "structured-home"));
+      ((arr($f0.backlog.records)
         | map(select(.state == "queued" and .structured == true)
             | {id,title,kind,repo,owner:"(main)",reason:(.blocked_reason // null),
-               since:(.since // null),details:(.body_excerpt // null)})) as $todo_all
+               since:(.since // null),details:(.body_excerpt // null)}))
+       + (structured_homes
+          | map(. as $m
+              | arr($m.queued)
+              | map({id,title,kind,repo,owner:$m.id,
+                     reason:(.blocked_reason // .hold_reason // null),
+                     since:(.since // null),details:(.body_excerpt // null)}))
+          | add // [])
+       | newest_since_first) as $todo_all
       | ($todo_all[:$todo_limit]) as $todo_today
-      | (arr($b0.in_flight)
-        | map({id,title:(.name // .id),kind,repo,state,doing:(.doing // .state // null),
-               owner:(.owner // "(main)"),details:task_detail(.id)})) as $in_progress_today
+      | (arr($b0.in_flight) | map(.id)) as $in_flight_ids
+      | ((arr($b0.in_flight)
+          | map({id,title:(.name // .id),kind,repo,state,doing:(.doing // .state // null),
+                 owner:(.owner // "(main)"),details:task_detail(.id)}))
+        + (arr($f0.backlog.records)
+          | map(select(.structured == true and .state == "in_flight")
+              | . as $r
+              | select(($in_flight_ids | index($r.id)) == null)
+              | task_state($r.id) as $t
+              | {id,title,kind,repo,
+                 state:($t.state // .current_role // "held"),
+                 doing:(.hold_reason // $t.detail // .current_role // null),
+                 owner:"(main)",details:(.body_excerpt // null)}))) as $in_progress_today
       | ((arr($f0.backlog.records)
           | map(select(landed_record and .completion.date == $today)
               | {id,title,kind,repo,completion,owner:"(main)",details:(.body_excerpt // null),
@@ -216,10 +253,6 @@ gather_dashboard_json() {
           home:$fm_home,
           today:$today,
           fleet:{generated:$fleet_generated,age_seconds:$fleet_age,cached:($fleet_cached == 1)},
-          herdr:{
-            detected:($herdr_env != ""),
-            session:(if $herdr_session != "" then $herdr_session else null end)
-          },
           widgets:{
             board:{
               todo:{
@@ -268,8 +301,7 @@ render_dashboard() {
   header=$(printf '%s' "$json" | jq -r '
     "Firstmate today board " + .generated +
     (.fleet as $f
-     | if ($f.cached // false) then " | fleet \((($f.age_seconds // 0) / 60 | floor))m old cached" else "" end) +
-    (if .herdr.detected then " | Herdr " + (.herdr.session // "session") else " | Herdr not detected" end)
+     | if ($f.cached // false) then " | fleet \((($f.age_seconds // 0) / 60 | floor))m old cached" else "" end)
   ')
   stats=$(printf '%s' "$json" | jq -r '
     "Todo \((.widgets.board.todo.items // []) | length)" +
